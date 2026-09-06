@@ -1,6 +1,6 @@
 {
-  "model": "deepseek/deepseek-chat",
-  "smallModel": "deepseek/deepseek-chat",
+  "model": "deepseek/deepseek-v4-pro",
+  "smallModel": "deepseek/deepseek-v4-flash",
   "temperature": 0,
   "maxTurns": 50,
   "maxCostUSD": 2.0,

@@ -39,10 +39,10 @@ describe('parseModelRef', () => {
 describe('ProviderRegistry', () => {
   it('resolves a built-in provider using its documented env var', () => {
     const reg = new ProviderRegistry({ env: { DEEPSEEK_API_KEY: 'sk-x' } });
-    const resolved = reg.resolve('deepseek/deepseek-chat');
+    const resolved = reg.resolve('deepseek/deepseek-v4-flash');
 
     expect(resolved.providerId).toBe('deepseek');
-    expect(resolved.model).toBe('deepseek-chat');
+    expect(resolved.model).toBe('deepseek-v4-flash');
     expect(resolved.capabilities.promptCache).toBe('implicit');
   });
 
@@ -114,11 +114,12 @@ describe('ProviderRegistry', () => {
 });
 
 describe('resolveCapabilities', () => {
-  it('marks reasoning models and their parameter restrictions', () => {
-    const caps = resolveCapabilities('deepseek', 'deepseek-reasoner');
-    expect(caps.reasoning).toBe(true);
-    expect(caps.fixedTemperature).toBe(true);
-    expect(caps.parallelToolCalls).toBe(false);
+  it('marks DeepSeek V4 models as supporting a reasoning channel', () => {
+    // Thinking is an effort level (low/high/max) on deepseek-v4-pro/-flash
+    // rather than a separate reasoning-only model id, unlike the retired
+    // deepseek-reasoner, which rejected temperature and parallel tool calls.
+    expect(resolveCapabilities('deepseek', 'deepseek-v4-pro').reasoning).toBe(true);
+    expect(resolveCapabilities('deepseek', 'deepseek-v4-flash').reasoning).toBe(true);
   });
 
   it('knows local runtimes do not report streamed usage', () => {

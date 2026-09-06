@@ -26,17 +26,17 @@ This repository is that harness, written to be read.
 pnpm install && pnpm build
 
 node packages/cli/dist/index.js models          # what's configured, what has keys
-node packages/cli/dist/index.js raw "explain async generators" -m deepseek/deepseek-chat
+node packages/cli/dist/index.js raw "explain async generators" -m deepseek/deepseek-v4-flash
 node packages/cli/dist/index.js doctor          # resolved settings and their sources
 
 # the full agent loop: read/write/edit/glob/grep/bash/todo, gated by the
 # permission engine, streamed to the terminal, recorded to a resumable session
 node packages/cli/dist/index.js agent "add input validation to parseConfig" \
-  -m deepseek/deepseek-chat --mode ask
+  -m deepseek/deepseek-v4-pro --mode ask
 
 # same loop, interactive: omit the prompt to get a plain-text back-and-forth
 # session instead of a one-shot run — bare `hc` (no subcommand) does the same
-node packages/cli/dist/index.js agent --cwd . -m deepseek/deepseek-chat --mode acceptEdits
+node packages/cli/dist/index.js agent --cwd . -m deepseek/deepseek-v4-pro --mode acceptEdits
 ```
 
 `agent` runs the ReAct-shaped loop end to end: it streams the model's

@@ -132,7 +132,7 @@ export interface ModelRef {
   model: string;
 }
 
-/** `deepseek/deepseek-chat` -> `{ provider, model }`. Split on the first slash. */
+/** `deepseek/deepseek-v4-flash` -> `{ provider, model }`. Split on the first slash. */
 export function parseModelRef(ref: string, defaultProvider = 'openai'): ModelRef {
   const trimmed = ref.trim();
   if (trimmed === '') {

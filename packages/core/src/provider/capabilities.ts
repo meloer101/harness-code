@@ -64,29 +64,36 @@ interface CapabilityRule {
  */
 const RULES: CapabilityRule[] = [
   // --- DeepSeek -----------------------------------------------------------
+  // `deepseek-chat`/`deepseek-reasoner` were retired 2026-07-24 in favor of
+  // `deepseek-v4-flash`/`deepseek-v4-pro`; thinking is now an effort level
+  // (low/high/max) on the same model id rather than a separate reasoning-only
+  // model, so both get `reasoning: true` here instead of only one of them.
+  // Pricing is DeepSeek's peak-hour rate (the conservative, higher figure —
+  // off-peak is roughly half) as a best-effort placeholder pending
+  // confirmation against DeepSeek's own pricing page; cached-input rates are
+  // an estimate carried over from the prior generation's cache-to-input
+  // ratio, not independently confirmed.
   {
     provider: 'deepseek',
-    match: /^deepseek-(reasoner|r1)/i,
+    match: /^deepseek-v4-pro/i,
     caps: {
       reasoning: true,
-      // The reasoner rejects temperature/top_p and does not do parallel calls.
-      fixedTemperature: true,
-      parallelToolCalls: false,
       contextWindow: 128_000,
       maxOutputTokens: 64_000,
       promptCache: 'implicit',
-      pricing: { inputPerMTok: 0.55, outputPerMTok: 2.19, cachedInputPerMTok: 0.14 },
+      pricing: { inputPerMTok: 1.32, outputPerMTok: 3.96, cachedInputPerMTok: 0.33 },
     },
   },
   {
     provider: 'deepseek',
-    match: /^deepseek-chat/i,
+    match: /^deepseek-v4-flash/i,
     caps: {
+      reasoning: true,
       contextWindow: 128_000,
-      maxOutputTokens: 8_192,
+      maxOutputTokens: 64_000,
       promptCache: 'implicit',
       jsonMode: true,
-      pricing: { inputPerMTok: 0.27, outputPerMTok: 1.1, cachedInputPerMTok: 0.07 },
+      pricing: { inputPerMTok: 0.44, outputPerMTok: 1.32, cachedInputPerMTok: 0.11 },
     },
   },
 
