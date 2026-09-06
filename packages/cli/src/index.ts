@@ -23,6 +23,7 @@ import {
   createPermissionEngine,
   createPermissionHooks,
   findProjectRoot,
+  isSandboxExecAvailable,
   loadSession,
   loadSettings,
   nonInteractiveAskHandler,
@@ -243,6 +244,12 @@ program
       // so it must deterministically deny rather than hang or silently proceed.
       const hooks = createPermissionHooks(engine, nonInteractiveAskHandler);
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
+      if (!isSandboxExecAvailable()) {
+        process.stderr.write(
+          '\x1b[2mbash sandbox: unavailable — commands run without OS-level workspace confinement ' +
+            '(sandbox-exec is macOS-only); the permission engine\'s review is still in effect.\x1b[0m\n',
+        );
+      }
 
       const controller = new AbortController();
       process.on('SIGINT', () => controller.abort());

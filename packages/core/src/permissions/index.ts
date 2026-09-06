@@ -28,3 +28,5 @@ export { PermissionEngine, createPermissionEngine } from './engine.js';
 export type { PermissionEngineOptions } from './engine.js';
 export { createPermissionHooks, nonInteractiveAskHandler } from './hooks.js';
 export { isSecretEnvKey, sandboxedEnv } from './sandbox.js';
+export { buildSandboxProfile, isSandboxExecAvailable, wrapCommand } from './macos-sandbox.js';
+export type { WrappedCommand } from './macos-sandbox.js';

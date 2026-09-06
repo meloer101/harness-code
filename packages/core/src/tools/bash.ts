@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { z } from 'zod';
 
+import { wrapCommand } from '../permissions/macos-sandbox.js';
 import { PathEscapeError, assertInsideWorkspace } from '../permissions/paths.js';
 import { sandboxedEnv } from '../permissions/sandbox.js';
 import type { ToolResult, ToolSpec } from './types.js';
@@ -28,9 +29,11 @@ const TAIL_CHARS = 8_000;
 const KILL_GRACE_MS = 2_000;
 
 /**
- * No command-line vetting or environment filtering here on purpose — that is
- * Phase 3's job (AST-based review, env allowlist, sandbox-exec). This tool is
- * spawn + timeout + output cap only.
+ * No command-line vetting here on purpose — that is the permission engine's
+ * job (AST-based review in `bash-ast.ts`, run before this tool is ever
+ * called). This tool is spawn + env allowlist + OS sandbox + timeout +
+ * output cap: the layer that runs whatever command was already approved,
+ * as confined as this machine allows.
  */
 export const bashTool: ToolSpec<Input> = {
   name: 'bash',
@@ -48,9 +51,13 @@ export const bashTool: ToolSpec<Input> = {
       return { content: message, isError: true };
     }
     const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // The writable region is the whole workspace (ctx.cwd), not just the possibly
+    // narrower execution directory — a command run from a subdirectory can still
+    // legitimately write to a sibling path within the same workspace.
+    const { cmd: spawnCmd, args: spawnArgs } = wrapCommand(['-c', input.command], ctx.cwd);
 
     return new Promise<ToolResult>((resolvePromise) => {
-      const child = spawn('/bin/sh', ['-c', input.command], {
+      const child = spawn(spawnCmd, spawnArgs, {
         cwd,
         env: sandboxedEnv(),
         ...(ctx.signal ? { signal: ctx.signal } : {}),

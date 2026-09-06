@@ -29,6 +29,19 @@ describe('bashTool', () => {
     expect(result.content.trim()).toBe('hello');
   });
 
+  it('can still write inside the workspace, whether or not the OS sandbox is active', async () => {
+    // On macOS this runs through wrapCommand()'s sandbox-exec path (see
+    // macos-sandbox.test.ts); on any other platform — including this
+    // project's ubuntu-latest CI — sandbox-exec isn't available and it
+    // falls back to a plain spawn. Either way, a write inside the workspace
+    // must succeed: the whole point of the profile is to scope writes to
+    // this directory, not to block them here too.
+    const { readFile } = await import('node:fs/promises');
+    const result = await bashTool.execute({ command: 'echo hello > out.txt' }, ctx);
+    expect(result.isError).toBeUndefined();
+    expect((await readFile(join(cwd, 'out.txt'), 'utf8')).trim()).toBe('hello');
+  });
+
   it('reports a non-zero exit code as an error', async () => {
     const result = await bashTool.execute({ command: 'exit 3' }, ctx);
     expect(result.isError).toBe(true);
