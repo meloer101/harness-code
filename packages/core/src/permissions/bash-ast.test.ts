@@ -52,4 +52,22 @@ describe('inspectBash', () => {
   it('treats $HOME as a catastrophic rm target', () => {
     expect(inspectBash(`rm -rf ${homedir()}`).hardDenyReason).toMatch(/recursive delete/i);
   });
+
+  it('denies inline-eval flags on general-purpose interpreters', () => {
+    expect(inspectBash('node -e "require(\'fs\').writeFileSync(\'/tmp/x\',\'y\')"').hardDenyReason).toMatch(
+      /inline code/i,
+    );
+    expect(inspectBash('node --eval "1+1"').hardDenyReason).toMatch(/inline code/i);
+    expect(inspectBash('node -p "1+1"').hardDenyReason).toMatch(/inline code/i);
+    expect(inspectBash('python3 -c "import os"').hardDenyReason).toMatch(/inline code/i);
+    expect(inspectBash('python -c "import os"').hardDenyReason).toMatch(/inline code/i);
+    expect(inspectBash('perl -e "system(\'ls\')"').hardDenyReason).toMatch(/inline code/i);
+    expect(inspectBash('ruby -e "system(\'ls\')"').hardDenyReason).toMatch(/inline code/i);
+  });
+
+  it('does not deny running an actual interpreter script file', () => {
+    expect(inspectBash('node --test math.test.js').hardDenyReason).toBeUndefined();
+    expect(inspectBash('node script.js').hardDenyReason).toBeUndefined();
+    expect(inspectBash('python3 script.py').hardDenyReason).toBeUndefined();
+  });
 });

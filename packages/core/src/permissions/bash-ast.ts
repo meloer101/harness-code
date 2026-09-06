@@ -5,7 +5,24 @@ import { parse } from 'shell-quote';
 import type { ParseEntry } from 'shell-quote';
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
-const INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'python', 'python3', 'node', 'perl', 'ruby']);
+
+/**
+ * Inline-eval flags for general-purpose interpreters, keyed by command name.
+ * Unlike a shell's `-c` (same grammar as everything else in this file, so
+ * genuinely safe to recurse into — see `nestedShellCommand`), the payload
+ * behind these flags is a different language entirely. Shell-parsing a
+ * Python or JS string with `shell-quote` doesn't review it — it produces
+ * tokens that only coincidentally look like a shell command — so these are
+ * hard-denied outright rather than given a false sense of having been
+ * checked.
+ */
+const INLINE_EVAL_FLAGS: Record<string, string[]> = {
+  python: ['-c'],
+  python3: ['-c'],
+  perl: ['-e'],
+  ruby: ['-e'],
+  node: ['-e', '--eval', '-p', '--print'],
+};
 
 export interface BashInspection {
   segments: string[][];
@@ -143,12 +160,17 @@ function hardDenySegment(argv: string[]): string | undefined {
     return 'chmod 777 / is not allowed';
   }
 
+  const evalFlags = INLINE_EVAL_FLAGS[cmd];
+  if (evalFlags && argv.some((a) => evalFlags.includes(a))) {
+    return `Running inline code via ${cmd} is not allowed — write it to a file and run that instead.`;
+  }
+
   return undefined;
 }
 
 function nestedShellCommand(argv: string[]): string | undefined {
   const cmd = baseCmd(argv[0] ?? '');
-  if (!INTERPRETERS.has(cmd)) return undefined;
+  if (!SHELLS.has(cmd)) return undefined;
   const cIndex = argv.findIndex((a) => a === '-c');
   if (cIndex === -1) return undefined;
   return argv[cIndex + 1];
