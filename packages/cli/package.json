@@ -1,0 +1,21 @@
+{
+  "name": "@harness-code/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "hc": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@harness-code/core": "workspace:*",
+    "@harness-code/tui": "workspace:*",
+    "commander": "^15.0.0"
+  }
+}

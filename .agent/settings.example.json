@@ -1,0 +1,30 @@
+{
+  "model": "deepseek/deepseek-chat",
+  "smallModel": "deepseek/deepseek-chat",
+  "temperature": 0,
+  "maxTurns": 50,
+  "maxCostUSD": 2.0,
+
+  "providers": {
+    "my-proxy": {
+      "label": "Internal LiteLLM proxy",
+      "baseUrl": "http://localhost:4000",
+      "apiKeyEnv": ["LITELLM_API_KEY"],
+      "requiresKey": false
+    }
+  },
+
+  "capabilities": {
+    "ollama/qwen3-coder:30b": {
+      "contextWindow": 131072,
+      "maxOutputTokens": 16384
+    }
+  },
+
+  "permissions": {
+    "mode": "ask",
+    "allow": ["Read", "Glob", "Grep", "Bash(git status:*)"],
+    "ask": [],
+    "deny": ["Read(.env*)", "Bash(rm -rf *)"]
+  }
+}

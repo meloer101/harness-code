@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+.agent/settings.json
+.agent/sessions/
+.agent/traces/
+.agent/plans/
+evals/.results/
+coverage/
+*.log

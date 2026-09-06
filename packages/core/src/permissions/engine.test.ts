@@ -1,0 +1,162 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { mergeSettings } from '../config/settings.js';
+import { createPermissionEngine } from './engine.js';
+import { createPermissionHooks, nonInteractiveAskHandler } from './hooks.js';
+import type { PermissionEngine } from './engine.js';
+
+describe('PermissionEngine', () => {
+  let root: string;
+  let engine: (overrides?: Partial<Parameters<typeof createPermissionEngine>[0]>) => PermissionEngine;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'hc-eng-'));
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'a.ts'), 'ok', 'utf8');
+    await writeFile(join(root, '.env'), 'SECRET=1', 'utf8');
+    engine = (overrides = {}) =>
+      createPermissionEngine({
+        workspaceRoot: root,
+        mode: 'ask',
+        allow: [],
+        ask: [],
+        deny: [],
+        ...overrides,
+      });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('lets deny beat allow', async () => {
+    const e = engine({
+      allow: ['Read'],
+      deny: ['Read(./src/**)'],
+    });
+    const v = await e.evaluate({ toolName: 'read', input: { path: 'src/a.ts' }, readOnly: true });
+    expect(v.decision).toBe('deny');
+  });
+
+  it('lets a specific allow cover a sensitive file, but not a path-cage escape', async () => {
+    const e = engine({
+      mode: 'yolo',
+      allow: ['Read(.env)', 'Read(.env.*)'],
+    });
+    const env = await e.evaluate({ toolName: 'read', input: { path: '.env' }, readOnly: true });
+    expect(env.decision).toBe('allow');
+
+    const escape = await e.evaluate({
+      toolName: 'read',
+      input: { path: '../secret' },
+      readOnly: true,
+    });
+    expect(escape.decision).toBe('deny');
+    if (escape.decision === 'deny') expect(escape.reason).toMatch(/escapes the workspace/);
+  });
+
+  it('does not let a bare Read allow override .env', async () => {
+    const e = engine({ allow: ['Read'] });
+    const v = await e.evaluate({ toolName: 'read', input: { path: '.env' }, readOnly: true });
+    expect(v.decision).toBe('deny');
+    if (v.decision === 'deny') expect(v.reason).toMatch(/sensitive/);
+  });
+
+  it('readOnly mode denies write and bash, allows read and todo', async () => {
+    const e = engine({ mode: 'readOnly' });
+    expect(
+      (await e.evaluate({ toolName: 'write', input: { path: 'src/a.ts', content: 'x' }, readOnly: false }))
+        .decision,
+    ).toBe('deny');
+    expect(
+      (await e.evaluate({ toolName: 'bash', input: { command: 'echo hi' }, readOnly: false })).decision,
+    ).toBe('deny');
+    expect(
+      (await e.evaluate({ toolName: 'read', input: { path: 'src/a.ts' }, readOnly: true })).decision,
+    ).toBe('allow');
+    expect((await e.evaluate({ toolName: 'todo', input: { todos: [] }, readOnly: false })).decision).toBe(
+      'allow',
+    );
+  });
+
+  it('acceptEdits allows write but asks for bash', async () => {
+    const e = engine({ mode: 'acceptEdits' });
+    expect(
+      (await e.evaluate({ toolName: 'write', input: { path: 'new.txt', content: 'x' }, readOnly: false }))
+        .decision,
+    ).toBe('allow');
+    expect(
+      (await e.evaluate({ toolName: 'bash', input: { command: 'echo hi' }, readOnly: false })).decision,
+    ).toBe('ask');
+  });
+
+  it('plan mode denies write', async () => {
+    const e = engine({ mode: 'plan' });
+    const v = await e.evaluate({
+      toolName: 'write',
+      input: { path: 'src/a.ts', content: 'x' },
+      readOnly: false,
+    });
+    expect(v.decision).toBe('deny');
+    if (v.decision === 'deny') expect(v.reason).toMatch(/plan mode/);
+  });
+
+  it('yolo still hard-denies rm -rf /', async () => {
+    const e = engine({ mode: 'yolo' });
+    const v = await e.evaluate({
+      toolName: 'bash',
+      input: { command: 'rm -rf /' },
+      readOnly: false,
+    });
+    expect(v.decision).toBe('deny');
+  });
+
+  it('denies unknown tools', async () => {
+    const e = engine({ mode: 'yolo' });
+    const v = await e.evaluate({ toolName: 'danger', input: {}, readOnly: false });
+    expect(v.decision).toBe('deny');
+    if (v.decision === 'deny') expect(v.reason).toMatch(/unknown tool/i);
+  });
+});
+
+describe('mergeSettings permissions', () => {
+  it('concatenates allow/ask/deny and lets the project override mode', () => {
+    const merged = mergeSettings(
+      { permissions: { mode: 'ask', allow: ['Read'], ask: [], deny: ['Bash(rm *:*)'] } },
+      { permissions: { mode: 'yolo', allow: ['Glob'], deny: ['Write(./secrets/**)'] } },
+    );
+    expect(merged.permissions?.mode).toBe('yolo');
+    expect(merged.permissions?.allow).toEqual(['Read', 'Glob']);
+    expect(merged.permissions?.deny).toEqual(['Bash(rm *:*)', 'Write(./secrets/**)']);
+  });
+});
+
+describe('createPermissionHooks', () => {
+  it('turns ask into deny via the non-interactive handler', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hc-hook-'));
+    try {
+      const engine = createPermissionEngine({
+        workspaceRoot: root,
+        mode: 'ask',
+        allow: [],
+        ask: [],
+        deny: [],
+      });
+      const hooks = createPermissionHooks(engine, nonInteractiveAskHandler);
+      const decision = await hooks.onBeforeToolCall?.(
+        { type: 'tool_use', id: '1', name: 'bash', input: { command: 'echo hi' } },
+        { turn: 1, cwd: root },
+      );
+      expect(decision).toMatchObject({ decision: 'deny' });
+      if (decision && decision.decision === 'deny') {
+        expect(decision.reason).toMatch(/non-interactive/i);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
