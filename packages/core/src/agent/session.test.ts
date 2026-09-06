@@ -1,11 +1,11 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { userText } from '../provider/types.js';
-import { SessionRecorder, SessionState, loadSession } from './session.js';
+import { SessionRecorder, SessionState, loadSession, rebuildSessionState } from './session.js';
 
 describe('SessionState', () => {
   it('tracks which files have been read', () => {
@@ -49,5 +49,81 @@ describe('SessionRecorder / loadSession', () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]).toEqual(userText('hello'));
     expect(messages[1]?.role).toBe('assistant');
+  });
+});
+
+describe('rebuildSessionState', () => {
+  let agentDir: string;
+  let cwd: string;
+
+  beforeEach(async () => {
+    agentDir = await realpath(await mkdtemp(join(tmpdir(), 'hc-session-')));
+    // realpath: on macOS, os.tmpdir() is itself a symlink, and
+    // assertInsideWorkspace() realpaths everything it resolves — cwd has to
+    // be canonical too, or it won't string-match what rebuildSessionState marks.
+    cwd = await realpath(await mkdtemp(join(tmpdir(), 'hc-session-cwd-')));
+  });
+
+  afterEach(async () => {
+    await rm(agentDir, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('marks files touched by successful read/write/edit calls as read', async () => {
+    await writeFile(join(cwd, 'a.txt'), 'hello', 'utf8');
+    const recorder = new SessionRecorder(agentDir, 'test-session');
+    await recorder.recordToolCall({
+      id: 'call_1',
+      name: 'read',
+      input: { path: 'a.txt' },
+      result: { content: '1\thello' },
+    });
+
+    const session = await rebuildSessionState(agentDir, 'test-session', cwd);
+
+    expect(session.hasRead(join(cwd, 'a.txt'))).toBe(true);
+  });
+
+  it('does not mark a file whose recorded call failed', async () => {
+    await writeFile(join(cwd, 'a.txt'), 'hello', 'utf8');
+    const recorder = new SessionRecorder(agentDir, 'test-session');
+    await recorder.recordToolCall({
+      id: 'call_1',
+      name: 'edit',
+      input: { path: 'a.txt', oldString: 'x', newString: 'y' },
+      result: { content: 'oldString not found', isError: true },
+    });
+
+    const session = await rebuildSessionState(agentDir, 'test-session', cwd);
+
+    expect(session.hasRead(join(cwd, 'a.txt'))).toBe(false);
+  });
+
+  it('does not mark a file that no longer exists', async () => {
+    const recorder = new SessionRecorder(agentDir, 'test-session');
+    await recorder.recordToolCall({
+      id: 'call_1',
+      name: 'read',
+      input: { path: 'gone.txt' },
+      result: { content: '1\thello' },
+    });
+
+    const session = await rebuildSessionState(agentDir, 'test-session', cwd);
+
+    expect(session.hasRead(join(cwd, 'gone.txt'))).toBe(false);
+  });
+
+  it('ignores tool calls unrelated to the file ledger', async () => {
+    const recorder = new SessionRecorder(agentDir, 'test-session');
+    await recorder.recordToolCall({
+      id: 'call_1',
+      name: 'bash',
+      input: { command: 'echo hi' },
+      result: { content: 'hi' },
+    });
+
+    const session = await rebuildSessionState(agentDir, 'test-session', cwd);
+
+    expect(session.getTodos()).toEqual([]); // sanity: a fresh, otherwise-empty session
   });
 });

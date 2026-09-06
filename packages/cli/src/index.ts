@@ -26,6 +26,7 @@ import {
   loadSession,
   loadSettings,
   nonInteractiveAskHandler,
+  rebuildSessionState,
 } from '@harness-code/core';
 import type { AgentEvent, ModelRequest, PermissionMode } from '@harness-code/core';
 import { readFileSync } from 'node:fs';
@@ -222,6 +223,10 @@ program
       const agentDir = join(await findProjectRoot(cwd), AGENT_DIR);
       const recorder = new SessionRecorder(agentDir, opts.resume);
       const priorMessages = opts.resume ? await loadSession(agentDir, opts.resume) : [];
+      // Resuming replays the read ledger too, not just the messages — otherwise a file
+      // read in the prior run looks unread to this one, and the first edit attempt
+      // trips the read-before-edit invariant for no reason.
+      const session = opts.resume ? await rebuildSessionState(agentDir, opts.resume, cwd) : undefined;
 
       const tools = new ToolRegistry(builtinTools());
 
@@ -278,6 +283,7 @@ program
         cwd,
         system: buildAgentSystemPrompt({ cwd }),
         recorder,
+        ...(session ? { session } : {}),
         hooks,
         signal: controller.signal,
         ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
