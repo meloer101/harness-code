@@ -16,6 +16,7 @@ import {
   ProviderError,
   ProviderRegistry,
   SessionRecorder,
+  SessionState,
   ToolRegistry,
   VERSION,
   buildAgentSystemPrompt,
@@ -29,9 +30,10 @@ import {
   nonInteractiveAskHandler,
   rebuildSessionState,
 } from '@harness-code/core';
-import type { AgentEvent, ModelRequest, PermissionMode } from '@harness-code/core';
+import type { AgentEvent, Message, ModelRequest, PermissionMode } from '@harness-code/core';
 import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
+import { createInterface } from 'node:readline';
 
 /**
  * Minimal `.env` loader: `KEY=value` per line, `#` comments, optional quotes.
@@ -181,9 +183,12 @@ program
   });
 
 program
-  .command('agent')
-  .description('Run the full agent loop with tools (read/write/edit/glob/grep/bash/todo)')
-  .argument('<prompt>', 'the task to hand to the agent')
+  .command('agent', { isDefault: true })
+  .description(
+    'Run the agent loop with tools (read/write/edit/glob/grep/bash/todo). ' +
+      'Omit <prompt> to start an interactive session — this is also what bare `hc` runs.',
+  )
+  .argument('[prompt]', 'the task to hand to the agent; omit to start an interactive session')
   .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-chat')
   .option('--cwd <dir>', 'workspace root the agent operates in', process.cwd())
   .option('--max-turns <n>', 'stop after this many turns', (v) => parseInt(v, 10))
@@ -198,7 +203,7 @@ program
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
   .action(
     async (
-      prompt: string,
+      prompt: string | undefined,
       opts: {
         model?: string;
         cwd: string;
@@ -226,8 +231,11 @@ program
       const priorMessages = opts.resume ? await loadSession(agentDir, opts.resume) : [];
       // Resuming replays the read ledger too, not just the messages — otherwise a file
       // read in the prior run looks unread to this one, and the first edit attempt
-      // trips the read-before-edit invariant for no reason.
-      const session = opts.resume ? await rebuildSessionState(agentDir, opts.resume, cwd) : undefined;
+      // trips the read-before-edit invariant for no reason. This same SessionState is
+      // reused across every turn below (one-shot has only one; the REPL has many) — it's
+      // what makes the read ledger persist across an entire interactive session instead
+      // of resetting on every message.
+      const session = opts.resume ? await rebuildSessionState(agentDir, opts.resume, cwd) : new SessionState();
 
       const tools = new ToolRegistry(builtinTools());
 
@@ -240,8 +248,9 @@ program
         ask: [...(permissions.ask ?? []), ...opts.ask],
         deny: [...(permissions.deny ?? []), ...opts.deny],
       });
-      // hc agent is a one-shot, non-interactive run: any "ask" verdict has nobody to ask,
-      // so it must deterministically deny rather than hang or silently proceed.
+      // Neither a one-shot run nor this REPL has anyone to answer an "ask" verdict
+      // interactively (that needs Phase 9's TUI), so it must deterministically deny
+      // rather than hang or silently proceed.
       const hooks = createPermissionHooks(engine, nonInteractiveAskHandler);
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
       if (!isSandboxExecAvailable()) {
@@ -250,9 +259,6 @@ program
             '(sandbox-exec is macOS-only); the permission engine\'s review is still in effect.\x1b[0m\n',
         );
       }
-
-      const controller = new AbortController();
-      process.on('SIGINT', () => controller.abort());
 
       let thinkingOpen = false;
       const onEvent = (event: AgentEvent): void => {
@@ -284,27 +290,108 @@ program
         }
       };
 
-      const loop = new AgentLoop({
-        model: resolved,
-        tools,
-        cwd,
-        system: buildAgentSystemPrompt({ cwd }),
-        recorder,
-        ...(session ? { session } : {}),
-        hooks,
-        signal: controller.signal,
-        ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
-        ...(opts.maxCost !== undefined ? { maxCostUSD: opts.maxCost } : {}),
-        onEvent,
+      // One AgentLoop per turn (cheap: it just stores references), all sharing the one
+      // `session` above — that's what carries the read ledger across turns. The
+      // AbortSignal is likewise per-turn: it's set at construction, so a single
+      // long-lived loop could never get a fresh signal for message two onward, which
+      // is what a mid-stream Ctrl+C needs to abort one turn without killing the REPL.
+      function buildLoop(signal: AbortSignal): AgentLoop {
+        return new AgentLoop({
+          model: resolved,
+          tools,
+          cwd,
+          system: buildAgentSystemPrompt({ cwd }),
+          recorder,
+          session,
+          hooks,
+          signal,
+          ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
+          ...(opts.maxCost !== undefined ? { maxCostUSD: opts.maxCost } : {}),
+          onEvent,
+        });
+      }
+
+      async function runOneTurn(text: string, messages: Message[]) {
+        const controller = new AbortController();
+        const onSigint = (): void => controller.abort();
+        process.on('SIGINT', onSigint);
+        try {
+          const userMessage = { role: 'user' as const, content: [{ type: 'text' as const, text }] };
+          await recorder.recordMessage(userMessage);
+          const result = await buildLoop(controller.signal).run([...messages, userMessage]);
+          process.stdout.write('\n');
+          printUsage(resolved.ref, result.usage);
+          return result;
+        } finally {
+          process.off('SIGINT', onSigint);
+        }
+      }
+
+      if (prompt !== undefined) {
+        const result = await runOneTurn(prompt, priorMessages);
+        process.stderr.write(`\x1b[2msession ${recorder.id} · stop: ${result.stopReason}\x1b[0m\n`);
+        return;
+      }
+
+      // Interactive session: plain text in, streamed response out, same as the one-shot
+      // path above but looped over stdin instead of a single CLI argument.
+      process.stderr.write(
+        `\x1b[2msession ${recorder.id} · cwd ${cwd} · model ${resolved.ref} · mode ${mode}\x1b[0m\n`,
+      );
+      process.stderr.write('\x1b[2mtype a message, or "exit"/"quit" to leave (Ctrl+D also works)\x1b[0m\n');
+
+      let messages = priorMessages;
+      const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+
+      // Ctrl+C while idle at the prompt closes the session; while a turn is running,
+      // runOneTurn's own SIGINT listener (registered above) takes over instead — this
+      // one is removed for the duration of the turn so only one of the two ever fires.
+      const onIdleSigint = (): void => rl.close();
+      process.on('SIGINT', onIdleSigint);
+
+      // Piped/non-interactive input arrives as one buffered chunk, and readline fires
+      // 'line' for every line already parsed out of it synchronously, back to back —
+      // pause()/resume() only affects the *next* underlying read, not lines already
+      // queued from the current one. Without this chain, a fast burst of input (a
+      // script, or someone typing ahead) would start several turns concurrently and
+      // could process "exit" before an earlier real message ever got a chance to run.
+      // Chaining onto one promise instead makes every line wait for the previous one's
+      // turn to fully finish, whether it arrived a second later or in the same chunk.
+      let queue: Promise<void> = Promise.resolve();
+
+      async function processLine(line: string): Promise<void> {
+        const text = line.trim();
+        if (text === '') {
+          rl.prompt();
+          return;
+        }
+        if (text === 'exit' || text === 'quit') {
+          rl.close();
+          return;
+        }
+        process.off('SIGINT', onIdleSigint);
+        try {
+          const result = await runOneTurn(text, messages);
+          messages = result.messages;
+        } catch (err) {
+          process.stderr.write(`\x1b[31mhc: ${errorMessageOf(err)}\x1b[0m\n`);
+        } finally {
+          process.on('SIGINT', onIdleSigint);
+          rl.prompt();
+        }
+      }
+
+      rl.prompt();
+      rl.on('line', (line) => {
+        queue = queue.then(() => processLine(line));
       });
 
-      const userMessage = { role: 'user' as const, content: [{ type: 'text' as const, text: prompt }] };
-      await recorder.recordMessage(userMessage);
-      const result = await loop.run([...priorMessages, userMessage]);
-
-      process.stdout.write('\n');
-      printUsage(resolved.ref, result.usage);
-      process.stderr.write(`\x1b[2msession ${recorder.id} · stop: ${result.stopReason}\x1b[0m\n`);
+      rl.on('close', () => {
+        void queue.finally(() => {
+          process.stderr.write(`\n\x1b[2msession ${recorder.id}\x1b[0m\n`);
+          process.exit(0);
+        });
+      });
     },
   );
 
@@ -337,6 +424,10 @@ function printUsage(
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function errorMessageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function fail(message: string): never {

@@ -33,6 +33,10 @@ node packages/cli/dist/index.js doctor          # resolved settings and their so
 # permission engine, streamed to the terminal, recorded to a resumable session
 node packages/cli/dist/index.js agent "add input validation to parseConfig" \
   -m deepseek/deepseek-chat --mode ask
+
+# same loop, interactive: omit the prompt to get a plain-text back-and-forth
+# session instead of a one-shot run — bare `hc` (no subcommand) does the same
+node packages/cli/dist/index.js agent --cwd . -m deepseek/deepseek-chat --mode acceptEdits
 ```
 
 `agent` runs the ReAct-shaped loop end to end: it streams the model's
@@ -41,6 +45,16 @@ tools in parallel, writes serialized), feeds the results back, and repeats
 until the model stops asking for tools or a turn/cost budget is hit. Every
 message and tool call is appended to `.agent/sessions/<id>.jsonl` as it
 happens, so `--resume <id>` picks the conversation back up.
+
+Passing `<prompt>` runs one turn and exits — the scriptable form. Omitting
+it drops into a `readline` REPL: the same loop and the same `SessionState`
+(so the read-before-edit ledger persists across messages, not just within
+one) carry over turn to turn, Ctrl+C aborts an in-flight turn without
+killing the session, and a second Ctrl+C at an idle prompt (or `exit`/
+Ctrl+D) ends it cleanly. This isn't the Ink TUI from the roadmap below —
+no panels, no slash commands — just plain text in, streamed text out,
+which is what actually makes it usable to talk to instead of re-typing a
+whole command line per message.
 
 ## The compatibility layer
 
