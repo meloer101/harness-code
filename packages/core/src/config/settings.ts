@@ -25,6 +25,10 @@ export interface Settings extends RouterSettings {
   smallModel?: string;
   maxTurns?: number;
   maxCostUSD?: number;
+  /** Stop once cumulative input+output tokens exceed this. */
+  maxTokens?: number;
+  /** Per-request output cap; also the space reserved out of the context window. */
+  maxOutputTokens?: number;
   temperature?: number;
   permissions?: PermissionConfig;
 }

@@ -14,9 +14,18 @@ import type { ToolResult } from '../tools/types.js';
 export interface TurnContext {
   turn: number;
   cwd: string;
+  /** Aborts when the current turn is cancelled (Ctrl+C). Threaded through to the ask handler. */
+  signal?: AbortSignal;
 }
 
 export type PermissionDecision = { decision: 'allow' } | { decision: 'deny'; reason: string };
+
+/** What `onContextPressure` is handed: how full the usable window is this turn. */
+export interface ContextPressure {
+  usedTokens: number;
+  windowTokens: number;
+  ratio: number;
+}
 
 export interface AgentHooks {
   onBeforeTurn?(ctx: TurnContext): Promise<void> | void;
@@ -29,8 +38,12 @@ export interface AgentHooks {
     result: ToolResult,
     ctx: TurnContext,
   ): Promise<void> | void;
-  /** Stub for now — Phase 4's compactor decides here whether to summarize. */
-  onContextPressure?(ctx: TurnContext): Promise<void> | void;
+  /**
+   * Fired at the top of a turn once the usable context window crosses
+   * `contextWarnRatio`. Phase 4's compactor consumes this exact signature to
+   * decide whether to summarize; for now nothing implements it.
+   */
+  onContextPressure?(ctx: TurnContext, pressure: ContextPressure): Promise<void> | void;
 }
 
 export const allowAllHooks: AgentHooks = {

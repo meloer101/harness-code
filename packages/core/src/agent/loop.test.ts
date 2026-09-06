@@ -11,13 +11,16 @@ import { AgentLoop } from './loop.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks } from './hooks.js';
 
-function resolvedModel(provider: ScriptedProvider): ResolvedModel {
+function resolvedModel(
+  provider: ScriptedProvider,
+  capsOverride: Partial<typeof DEFAULT_CAPABILITIES> = {},
+): ResolvedModel {
   return {
     provider,
     providerId: provider.id,
     model: 'scripted-model',
     ref: `${provider.id}/scripted-model`,
-    capabilities: DEFAULT_CAPABILITIES,
+    capabilities: { ...DEFAULT_CAPABILITIES, ...capsOverride },
   };
 }
 
@@ -225,6 +228,103 @@ describe('AgentLoop', () => {
 
     expect(result.stopReason).toBe('aborted');
     expect(provider.callCount).toBe(0);
+  });
+
+  it('stops with max_tokens once cumulative usage passes the budget', async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: 'echo', input: {} }], usage: { inputTokens: 100, outputTokens: 100 } },
+      { text: 'unreached' },
+    ]);
+    const tools = new ToolRegistry([
+      trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true }),
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools,
+      cwd: '/tmp',
+      maxTokens: 150,
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('max_tokens');
+    expect(provider.callCount).toBe(1);
+  });
+
+  it('stops with context_limit when the history overflows the usable window', async () => {
+    const provider = new ScriptedProvider([{ text: 'unreached' }]);
+    const tools = new ToolRegistry([]);
+    const loop = new AgentLoop({
+      // usable window = 100 - 10 = 90 tokens; the prompt below dwarfs it
+      model: resolvedModel(provider, { contextWindow: 100, maxOutputTokens: 10 }),
+      tools,
+      cwd: '/tmp',
+    });
+
+    const result = await loop.run([userText('x'.repeat(8000))]);
+
+    expect(result.stopReason).toBe('context_limit');
+    expect(provider.callCount).toBe(0);
+  });
+
+  it('calls onContextPressure with the ratio once the warn threshold is crossed', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    const tools = new ToolRegistry([]);
+    const seen: Array<{ ratio: number; usedTokens: number; windowTokens: number }> = [];
+    const events: number[] = [];
+    const loop = new AgentLoop({
+      model: resolvedModel(provider, { contextWindow: 1000, maxOutputTokens: 100 }),
+      tools,
+      cwd: '/tmp',
+      contextWarnRatio: 0,
+      contextStopRatio: 5,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onContextPressure: (_ctx, pressure) => {
+          seen.push(pressure);
+        },
+      },
+      onEvent: (e) => {
+        if (e.type === 'context') events.push(e.ratio);
+      },
+    });
+
+    await loop.run([userText('hello world')]);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.windowTokens).toBe(900);
+    expect(seen[0]?.ratio).toBeGreaterThan(0);
+    expect(events[0]).toBeCloseTo(seen[0]!.ratio);
+  });
+
+  it('passes maxOutputTokens and temperature through to the ModelRequest', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    const tools = new ToolRegistry([]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools,
+      cwd: '/tmp',
+      maxOutputTokens: 1234,
+      temperature: 0.4,
+    });
+
+    await loop.run([userText('hi')]);
+
+    expect(provider.requests[0]?.maxOutputTokens).toBe(1234);
+    expect(provider.requests[0]?.temperature).toBe(0.4);
+  });
+
+  it('defaults maxOutputTokens to the model ceiling when unset', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider, { maxOutputTokens: 4096 }),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+    });
+
+    await loop.run([userText('hi')]);
+
+    expect(provider.requests[0]?.maxOutputTokens).toBe(4096);
   });
 
   it('uses allowAllHooks by default', async () => {

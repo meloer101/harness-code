@@ -12,7 +12,7 @@ import { mkdir, readFile, appendFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { stableStringify } from '../util/json.js';
-import { heuristicTokenCount } from './openai-compat.js';
+import { estimateRequestTokens, heuristicTokenCount } from '../context/tokenizer.js';
 import { ProviderError, drainStream, emptyUsage } from './types.js';
 import type {
   AssistantBlock,
@@ -317,23 +317,4 @@ function summarize(req: ModelRequest): string {
       .join(' ')
       .slice(0, 80) ?? '';
   return `${req.model} <- ${req.messages.length} msg: ${preview.replace(/\s+/g, ' ')}`;
-}
-
-function estimateRequestTokens(req: ModelRequest): number {
-  const text =
-    (req.system ?? []).map((s) => s.text).join('') +
-    req.messages
-      .map((m) =>
-        m.content
-          .map((b) =>
-            b.type === 'text' || b.type === 'thinking'
-              ? b.text
-              : b.type === 'tool_result'
-                ? b.content
-                : JSON.stringify(b.input),
-          )
-          .join(''),
-      )
-      .join('');
-  return heuristicTokenCount(text);
 }

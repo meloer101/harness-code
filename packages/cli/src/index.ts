@@ -31,6 +31,7 @@ import {
   rebuildSessionState,
 } from '@harness-code/core';
 import type { AgentEvent, Message, ModelRequest, PermissionMode } from '@harness-code/core';
+import { resolveBudgets } from './budgets.js';
 import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -193,6 +194,7 @@ program
   .option('--cwd <dir>', 'workspace root the agent operates in', process.cwd())
   .option('--max-turns <n>', 'stop after this many turns', (v) => parseInt(v, 10))
   .option('--max-cost <usd>', 'stop once estimated cost exceeds this', (v) => parseFloat(v))
+  .option('--max-tokens <n>', 'stop once cumulative input+output tokens exceed this', (v) => parseInt(v, 10))
   .option('--resume <id>', 'continue a previous session by id')
   .option(
     '--mode <mode>',
@@ -209,6 +211,7 @@ program
         cwd: string;
         maxTurns?: number;
         maxCost?: number;
+        maxTokens?: number;
         resume?: string;
         mode?: PermissionMode;
         allow: string[];
@@ -260,9 +263,33 @@ program
         );
       }
 
+      const { maxTurns, maxCostUSD, maxTokens, maxOutputTokens, temperature } = resolveBudgets(
+        { maxTurns: opts.maxTurns, maxCost: opts.maxCost, maxTokens: opts.maxTokens },
+        settings,
+      );
+
+      let lastContext: { usedTokens: number; windowTokens: number; ratio: number } | undefined;
+      let contextWarned = false;
+
       let thinkingOpen = false;
       const onEvent = (event: AgentEvent): void => {
         switch (event.type) {
+          case 'context': {
+            lastContext = event;
+            if (event.ratio >= 0.8 && !contextWarned) {
+              contextWarned = true;
+              if (thinkingOpen) {
+                process.stderr.write('\x1b[0m\n');
+                thinkingOpen = false;
+              }
+              process.stderr.write(
+                `\x1b[33mcontext ${fmtTokens(event.usedTokens)}/${fmtTokens(event.windowTokens)} ` +
+                  `(${Math.round(event.ratio * 100)}%) — approaching the window limit. ` +
+                  `Start a new session to reset context (in-session /compact lands in Phase 4).\x1b[0m\n`,
+              );
+            }
+            break;
+          }
           case 'thinking_delta':
             if (!thinkingOpen) {
               process.stderr.write('\x1b[2m[thinking] ');
@@ -305,8 +332,11 @@ program
           session,
           hooks,
           signal,
-          ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
-          ...(opts.maxCost !== undefined ? { maxCostUSD: opts.maxCost } : {}),
+          ...(maxTurns !== undefined ? { maxTurns } : {}),
+          ...(maxCostUSD !== undefined ? { maxCostUSD } : {}),
+          ...(maxTokens !== undefined ? { maxTokens } : {}),
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+          ...(temperature !== undefined ? { temperature } : {}),
           onEvent,
         });
       }
@@ -320,7 +350,9 @@ program
           await recorder.recordMessage(userMessage);
           const result = await buildLoop(controller.signal).run([...messages, userMessage]);
           process.stdout.write('\n');
-          printUsage(resolved.ref, result.usage);
+          printUsage(resolved.ref, result.usage, undefined, undefined, lastContext);
+          const note = describeStop(result.stopReason);
+          if (note) process.stderr.write(`\x1b[2m${note}\x1b[0m\n`);
           return result;
         } finally {
           process.off('SIGINT', onSigint);
@@ -403,11 +435,18 @@ program
     console.log(JSON.stringify({ version: VERSION, sources, settings }, null, 2));
   });
 
+interface ContextSnapshot {
+  usedTokens: number;
+  windowTokens: number;
+  ratio: number;
+}
+
 function printUsage(
   ref: string,
   usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number; costUSD?: number; estimated?: boolean },
   latencyMs?: number,
   ttftMs?: number,
+  context?: ContextSnapshot,
 ): void {
   const bits = [
     ref,
@@ -416,10 +455,38 @@ function printUsage(
   ];
   if (usage.cachedInputTokens > 0) bits.push(`cached ${usage.cachedInputTokens}`);
   if (usage.costUSD !== undefined) bits.push(`$${usage.costUSD.toFixed(5)}`);
+  if (context) {
+    bits.push(
+      `ctx ${fmtTokens(context.usedTokens)}/${fmtTokens(context.windowTokens)} ` +
+        `(${Math.round(context.ratio * 100)}%)`,
+    );
+  }
   if (ttftMs !== undefined) bits.push(`ttft ${ttftMs}ms`);
   if (latencyMs !== undefined) bits.push(`total ${latencyMs}ms`);
   if (usage.estimated) bits.push('(token counts estimated)');
   process.stderr.write(`\x1b[2m${bits.join('  ·  ')}\x1b[0m\n`);
+}
+
+/** `12345` -> `12.3k`; small counts stay exact. */
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
+/** A one-liner explaining why the loop stopped, for the reasons a user should act on. */
+function describeStop(reason: string): string | undefined {
+  switch (reason) {
+    case 'context_limit':
+      return 'stopped: context window nearly full. Start a new session to continue.';
+    case 'max_tokens':
+      return 'stopped: hit the --max-tokens budget (limit triggered after the turn that crossed it, not a hard ceiling).';
+    case 'max_cost':
+      return 'stopped: hit the --max-cost budget (limit triggered after the turn that crossed it, not a hard ceiling).';
+    case 'max_turns':
+      return 'stopped: hit the max-turns budget.';
+    default:
+      return undefined;
+  }
 }
 
 function collect(value: string, previous: string[]): string[] {

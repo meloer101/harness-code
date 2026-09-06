@@ -8,6 +8,7 @@
  */
 
 import { estimateCostUSD } from '../provider/capabilities.js';
+import { estimateMessageTokens, estimateRequestTokens } from '../context/tokenizer.js';
 import type { ResolvedModel } from '../provider/router.js';
 import {
   ProviderError,
@@ -32,7 +33,14 @@ import type { AgentHooks, PermissionDecision, TurnContext } from './hooks.js';
 import { SessionState } from './session.js';
 import type { SessionRecorder } from './session.js';
 
-export type AgentStopReason = 'end_turn' | 'max_turns' | 'max_cost' | 'aborted' | 'error';
+export type AgentStopReason =
+  | 'end_turn'
+  | 'max_turns'
+  | 'max_cost'
+  | 'max_tokens'
+  | 'context_limit'
+  | 'aborted'
+  | 'error';
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
@@ -40,6 +48,7 @@ export type AgentEvent =
   | { type: 'tool_call_start'; id: string; name: string; input: unknown }
   | { type: 'tool_call_end'; id: string; name: string; result: ToolResult }
   | { type: 'turn_end'; usage: Usage }
+  | { type: 'context'; usedTokens: number; windowTokens: number; ratio: number }
   | { type: 'stop'; reason: AgentStopReason };
 
 export interface AgentRunResult {
@@ -58,6 +67,15 @@ export interface AgentLoopOptions {
   hooks?: AgentHooks;
   maxTurns?: number;
   maxCostUSD?: number;
+  /** Stop once cumulative input+output tokens exceed this. */
+  maxTokens?: number;
+  /** Per-request output cap; also reserved out of the context window. Defaults to the model's ceiling. */
+  maxOutputTokens?: number;
+  temperature?: number;
+  /** Fraction of the usable context window at which `onContextPressure` fires. */
+  contextWarnRatio?: number;
+  /** Fraction of the usable context window at which the loop stops with `context_limit`. */
+  contextStopRatio?: number;
   /** Cap on concurrently running read-only tool calls within one turn. */
   concurrency?: number;
   signal?: AbortSignal;
@@ -66,6 +84,8 @@ export interface AgentLoopOptions {
 
 const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_CONTEXT_WARN_RATIO = 0.8;
+const DEFAULT_CONTEXT_STOP_RATIO = 0.95;
 
 interface Decision {
   call: ToolUseBlock;
@@ -77,12 +97,18 @@ export class AgentLoop {
   private readonly session: SessionState;
   private readonly maxTurns: number;
   private readonly concurrency: number;
+  private readonly maxOutputTokens: number;
+  private readonly contextWarnRatio: number;
+  private readonly contextStopRatio: number;
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.hooks = opts.hooks ?? allowAllHooks;
     this.session = opts.session ?? new SessionState();
     this.maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
+    this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
+    this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
+    this.contextStopRatio = opts.contextStopRatio ?? DEFAULT_CONTEXT_STOP_RATIO;
   }
 
   async run(initialMessages: Message[]): Promise<AgentRunResult> {
@@ -90,6 +116,18 @@ export class AgentLoop {
     let usage = emptyUsage();
     let costUSD = 0;
     let turn = 0;
+
+    // Usable window: the whole context minus the space we reserve for this
+    // turn's output. `contextWindow` is always populated (DEFAULT_CAPABILITIES).
+    const availableWindow = Math.max(
+      1,
+      this.opts.model.capabilities.contextWindow - this.maxOutputTokens,
+    );
+    // Anchored on the endpoint's real `usage` from the previous turn, so
+    // estimation error only accrues on the tool_result messages we appended
+    // since — not on a full-history heuristic pass every turn.
+    let prevUsage: Usage | undefined;
+    let appendedTokens = 0;
 
     for (;;) {
       turn++;
@@ -99,16 +137,46 @@ export class AgentLoop {
         return this.stop(messages, usage, 'max_cost');
       }
 
-      const turnCtx: TurnContext = { turn, cwd: this.opts.cwd };
+      const turnCtx: TurnContext = {
+        turn,
+        cwd: this.opts.cwd,
+        ...(this.opts.signal ? { signal: this.opts.signal } : {}),
+      };
       await this.hooks.onBeforeTurn?.(turnCtx);
 
       const request: ModelRequest = {
         model: this.opts.model.model,
         messages,
         tools: this.opts.tools.definitions(),
+        maxOutputTokens: this.maxOutputTokens,
+        ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
         ...(this.opts.system ? { system: this.opts.system } : {}),
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
+
+      const contextTokens =
+        prevUsage === undefined
+          ? estimateRequestTokens(request)
+          : prevUsage.inputTokens + prevUsage.outputTokens + appendedTokens;
+      const ratio = contextTokens / availableWindow;
+      this.emit({ type: 'context', usedTokens: contextTokens, windowTokens: availableWindow, ratio });
+
+      if (
+        this.opts.maxTokens !== undefined &&
+        usage.inputTokens + usage.outputTokens > this.opts.maxTokens
+      ) {
+        return this.stop(messages, usage, 'max_tokens');
+      }
+      if (ratio >= this.contextStopRatio) {
+        return this.stop(messages, usage, 'context_limit');
+      }
+      if (ratio >= this.contextWarnRatio) {
+        await this.hooks.onContextPressure?.(turnCtx, {
+          usedTokens: contextTokens,
+          windowTokens: availableWindow,
+          ratio,
+        });
+      }
 
       let response: ModelResponse;
       try {
@@ -138,6 +206,9 @@ export class AgentLoop {
       const userMessage: Message = { role: 'user', content: resultBlocks };
       messages.push(userMessage);
       await this.opts.recorder?.recordMessage(userMessage);
+
+      prevUsage = response.usage;
+      appendedTokens = estimateMessageTokens([userMessage]);
     }
   }
 

@@ -10,6 +10,8 @@
 
 import { estimateCostUSD, resolveCapabilities } from './capabilities.js';
 import type { CapabilityOverrides, ModelCapabilities } from './capabilities.js';
+import { flattenRequestText, heuristicTokenCount } from '../context/tokenizer.js';
+import type { TokenCounter } from '../context/tokenizer.js';
 import { PromptToolParser, renderToolPrompt } from './prompt-tools.js';
 import { parseSSE } from './sse.js';
 import { parseLooseJSON } from '../util/json.js';
@@ -32,7 +34,7 @@ import type {
   Usage,
 } from './types.js';
 
-export type TokenCounter = (text: string) => number;
+export type { TokenCounter } from '../context/tokenizer.js';
 
 export interface OpenAICompatConfig {
   /** Routing id (`deepseek`, `ollama`, ...). Also used in error messages. */
@@ -407,26 +409,9 @@ export class OpenAICompatProvider implements Provider {
   }
 
   private estimateUsage(req: ModelRequest, output: string): Usage {
-    const promptText =
-      (req.system ?? []).map((s) => s.text).join('\n') +
-      req.messages
-        .map((m) =>
-          m.content
-            .map((b) =>
-              b.type === 'text' || b.type === 'thinking'
-                ? b.text
-                : b.type === 'tool_result'
-                  ? b.content
-                  : JSON.stringify(b.input),
-            )
-            .join('\n'),
-        )
-        .join('\n') +
-      (req.tools ?? []).map((t) => t.description + JSON.stringify(t.inputSchema)).join('');
-
     return {
       ...emptyUsage(),
-      inputTokens: this.countTokens(promptText),
+      inputTokens: this.countTokens(flattenRequestText(req)),
       outputTokens: this.countTokens(output),
       estimated: true,
     };
@@ -858,29 +843,9 @@ function errText(err: unknown): string {
   return String(err);
 }
 
-/**
- * Rough token count for endpoints that report no usage at all (Ollama, most
- * llama.cpp builds). Weighted because CJK text is far denser per character than
- * the naive chars/4 rule assumes, and this project will be used on both.
- */
-export function heuristicTokenCount(text: string): number {
-  if (text === '') return 0;
-  let cjk = 0;
-  for (const ch of text) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (
-      (code >= 0x3040 && code <= 0x30ff) ||
-      (code >= 0x3400 && code <= 0x4dbf) ||
-      (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0xac00 && code <= 0xd7af) ||
-      (code >= 0xf900 && code <= 0xfaff)
-    ) {
-      cjk++;
-    }
-  }
-  const ascii = text.length - cjk;
-  return Math.max(1, Math.ceil(ascii / 4 + cjk * 0.75));
-}
+// Moved to `../context/tokenizer.ts` so the loop can share it; re-exported here
+// because that is where callers (and tests) have always imported it from.
+export { heuristicTokenCount } from '../context/tokenizer.js';
 
 // ---------------------------------------------------------------------------
 // Wire shapes (only the fields we read)
