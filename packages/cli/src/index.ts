@@ -23,6 +23,7 @@ import {
   builtinTools,
   createPermissionEngine,
   createPermissionHooks,
+  exitPlanModeTool,
   findProjectRoot,
   isSandboxExecAvailable,
   loadSession,
@@ -30,7 +31,14 @@ import {
   nonInteractiveAskHandler,
   rebuildSessionState,
 } from '@harness-code/core';
-import type { AgentEvent, AskHandler, Message, ModelRequest, PermissionMode } from '@harness-code/core';
+import type {
+  AgentControl,
+  AgentEvent,
+  AskHandler,
+  Message,
+  ModelRequest,
+  PermissionMode,
+} from '@harness-code/core';
 import { resolveBudgets } from './budgets.js';
 import { createPrompter, interactiveAskHandler } from './prompter.js';
 import type { Prompter } from './prompter.js';
@@ -243,8 +251,6 @@ program
       // of resetting on every message.
       const session = opts.resume ? await rebuildSessionState(agentDir, opts.resume, cwd) : new SessionState();
 
-      const tools = new ToolRegistry(builtinTools());
-
       const permissions = settings.permissions ?? {};
       const mode: PermissionMode = opts.mode ?? permissions.mode ?? 'ask';
       const engine = createPermissionEngine({
@@ -276,6 +282,28 @@ program
       const askHandler: AskHandler = process.stdin.isTTY ? interactiveAsk : nonInteractiveAskHandler;
       const hooks = createPermissionHooks(engine, askHandler);
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
+
+      const planApprovedMode: PermissionMode = permissions.planApprovedMode ?? 'acceptEdits';
+      // Channel from exit_plan_mode back here. `mode` is read live off the engine
+      // so the tool always sees the current mode, not a snapshot.
+      const control: AgentControl = {
+        get mode(): PermissionMode {
+          return engine.getMode();
+        },
+        exitPlanMode(): PermissionMode {
+          engine.setMode(planApprovedMode);
+          process.stderr.write(`\x1b[2mmode: plan → ${planApprovedMode}\x1b[0m\n`);
+          return planApprovedMode;
+        },
+        ...(process.stdin.isTTY
+          ? {
+              confirm: async ({ title, body }: { title: string; body: string }) => {
+                flushThinking();
+                return getPrompter().approve({ title, body });
+              },
+            }
+          : {}),
+      };
       if (!isSandboxExecAvailable()) {
         process.stderr.write(
           '\x1b[2mbash sandbox: unavailable — commands run without OS-level workspace confinement ' +
@@ -331,6 +359,9 @@ program
           case 'tool_call_end':
             if (event.result.isError) {
               process.stderr.write(`\x1b[31m[tool_error ${event.name}] ${event.result.content}\x1b[0m\n`);
+            } else if (event.name === 'exit_plan_mode') {
+              closeThinking();
+              process.stderr.write(`\x1b[2m${event.result.content}\x1b[0m\n`);
             }
             break;
           default:
@@ -343,15 +374,21 @@ program
       // AbortSignal is likewise per-turn: it's set at construction, so a single
       // long-lived loop could never get a fresh signal for message two onward, which
       // is what a mid-stream Ctrl+C needs to abort one turn without killing the REPL.
+      // `tools` and `system` are also rebuilt here, per the *current* engine mode:
+      // exit_plan_mode is only offered in plan mode, and the prompt overlay only
+      // appears there — so once a plan is approved the next turn drops both.
       function buildLoop(signal: AbortSignal): AgentLoop {
+        const activeMode = engine.getMode();
+        const specs = activeMode === 'plan' ? [...builtinTools(), exitPlanModeTool] : builtinTools();
         return new AgentLoop({
           model: resolved,
-          tools,
+          tools: new ToolRegistry(specs),
           cwd,
-          system: buildAgentSystemPrompt({ cwd }),
+          system: buildAgentSystemPrompt({ cwd, mode: activeMode }),
           recorder,
           session,
           hooks,
+          control,
           signal,
           ...(maxTurns !== undefined ? { maxTurns } : {}),
           ...(maxCostUSD !== undefined ? { maxCostUSD } : {}),
@@ -512,6 +549,8 @@ function describeStop(reason: string): string | undefined {
       return 'stopped: hit the --max-cost budget (limit triggered after the turn that crossed it, not a hard ceiling).';
     case 'max_turns':
       return 'stopped: hit the max-turns budget.';
+    case 'stopped_by_tool':
+      return 'stopped: plan written for review under .agent/plans/ (no interactive approver).';
     default:
       return undefined;
   }

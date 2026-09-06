@@ -327,6 +327,67 @@ describe('AgentLoop', () => {
     expect(provider.requests[0]?.maxOutputTokens).toBe(4096);
   });
 
+  it('stops with stopped_by_tool when a tool result sets endsRun', async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: 'finish', input: {} }] },
+      { text: 'unreached' },
+    ]);
+    const finish: ToolSpec<unknown> = {
+      name: 'finish',
+      description: 'ends the run',
+      schema: noInput,
+      readOnly: false,
+      concurrencySafe: false,
+      async execute() {
+        return { content: 'plan written', endsRun: true };
+      },
+    };
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([finish]),
+      cwd: '/tmp',
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('stopped_by_tool');
+    expect(provider.callCount).toBe(1);
+    // the tool_result is still in history before the stop
+    expect(result.messages.at(-1)?.content[0]).toMatchObject({
+      type: 'tool_result',
+      content: 'plan written',
+    });
+  });
+
+  it('threads control through to a tool ctx', async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: 'peek', input: {} }] },
+      { text: 'done' },
+    ]);
+    let sawMode: string | undefined;
+    const peek: ToolSpec<unknown> = {
+      name: 'peek',
+      description: 'reads control',
+      schema: noInput,
+      readOnly: true,
+      concurrencySafe: true,
+      async execute(_input, toolCtx) {
+        sawMode = toolCtx.control?.mode;
+        return { content: 'ok' };
+      },
+    };
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([peek]),
+      cwd: '/tmp',
+      control: { mode: 'plan', exitPlanMode: () => 'acceptEdits' },
+    });
+
+    await loop.run([userText('hi')]);
+
+    expect(sawMode).toBe('plan');
+  });
+
   it('uses allowAllHooks by default', async () => {
     const provider = new ScriptedProvider([
       { toolCalls: [{ name: 'echo', input: {} }] },

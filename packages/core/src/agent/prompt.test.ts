@@ -31,4 +31,24 @@ describe('buildAgentSystemPrompt', () => {
     const conventions = segments.find((s) => s.id === 'conventions');
     expect(conventions?.cacheBreakpoint).toBe(true);
   });
+
+  it('adds the plan_mode overlay only in plan mode, after the cacheable prefix', () => {
+    const plain = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    expect(plain.map((s) => s.id)).not.toContain('plan_mode');
+
+    const plan = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', mode: 'plan' });
+    expect(plan.map((s) => s.id)).toEqual(['identity', 'conventions', 'plan_mode', 'environment']);
+    const overlay = plan.find((s) => s.id === 'plan_mode');
+    expect(overlay?.text).toMatch(/exit_plan_mode/);
+    expect(overlay?.cacheBreakpoint).toBeFalsy();
+  });
+
+  it('leaves the cacheable prefix (identity + conventions) byte-identical across modes', () => {
+    const base = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    for (const mode of ['ask', 'plan', 'acceptEdits', 'readOnly', 'yolo'] as const) {
+      const withMode = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', mode });
+      expect(withMode[0]).toEqual(base[0]);
+      expect(withMode[1]).toEqual(base[1]);
+    }
+  });
 });

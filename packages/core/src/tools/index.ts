@@ -7,6 +7,7 @@ export * from './glob.js';
 export * from './grep.js';
 export * from './bash.js';
 export * from './todo.js';
+export * from './exit-plan-mode.js';
 
 import { bashTool } from './bash.js';
 import { editTool } from './edit.js';

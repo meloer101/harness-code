@@ -105,6 +105,48 @@ describe('PermissionEngine', () => {
     if (v.decision === 'deny') expect(v.reason).toMatch(/plan mode/);
   });
 
+  it('plan mode lets write/edit through only for .agent/plans/', async () => {
+    const e = engine({ mode: 'plan' });
+    const inside = await e.evaluate({
+      toolName: 'write',
+      input: { path: '.agent/plans/20260906-1200-x.md', content: '# plan' },
+      readOnly: false,
+    });
+    expect(inside.decision).toBe('allow');
+
+    const elsewhereAgent = await e.evaluate({
+      toolName: 'write',
+      input: { path: '.agent/settings.json', content: '{}' },
+      readOnly: false,
+    });
+    expect(elsewhereAgent.decision).toBe('deny');
+  });
+
+  it('plan mode allows exit_plan_mode; a deny rule still wins', async () => {
+    const ok = await engine({ mode: 'plan' }).evaluate({
+      toolName: 'exit_plan_mode',
+      input: { plan: '...' },
+      readOnly: false,
+    });
+    expect(ok.decision).toBe('allow');
+
+    const blocked = await engine({ mode: 'plan', deny: ['exit_plan_mode'] }).evaluate({
+      toolName: 'exit_plan_mode',
+      input: { plan: '...' },
+      readOnly: false,
+    });
+    expect(blocked.decision).toBe('deny');
+  });
+
+  it('exit_plan_mode is a known tool (not rejected as unknown)', async () => {
+    const v = await engine({ mode: 'ask' }).evaluate({
+      toolName: 'exit_plan_mode',
+      input: {},
+      readOnly: false,
+    });
+    expect(v.decision).not.toBe('deny');
+  });
+
   it('addAllowRule whitelists a whole tool for the rest of the session', async () => {
     const e = engine({ mode: 'ask' });
     expect((await e.evaluate({ toolName: 'bash', input: { command: 'npm test' }, readOnly: false })).decision).toBe(

@@ -4,7 +4,7 @@
 > 与 PLAN.md 同样的约定——**完成后在小节标注状态，不要事后重写本文**，
 > 计划与实际的偏差本身就是有价值的记录。
 >
-> **状态：进行中** —— Step 1 / Step 2 已完成（2026-09-06），Step 3 未开始。
+> **状态：已完成（2026-09-06）** —— Step 1 / 2 / 3 全部落地，`pnpm build && pnpm test && pnpm typecheck` 全绿（228 单测），plan mode 端到端手测通过。
 
 ## Context
 
@@ -181,6 +181,15 @@ specifier 前缀本身是个容易出错的判断，先做诚实的粗粒度、�
 ---
 
 ## Step 3 — Plan Mode（完整版）
+
+> **状态：已完成（2026-09-06）。** 偏差：
+> - `runToolCalls` 返回值从 `ToolResultBlock[]` 改成 `{ blocks, endsRun }`（`ToolResultBlock` 不带 `endsRun`，loop 需要另一条通道知道"该停了"）。
+> - `AgentControl.mode` 声明为 `readonly`；CLI 侧用 getter 实时读 `engine.getMode()`。
+> - `.agent/plans/` 前缀判定用 `defaults.ts` 里的 `PLANS_DIR_PREFIX` 常量，engine 不 import config（避免多一条依赖边）。
+> - prompt overlay 段 id = `plan_mode`，插在 `conventions` 与 `environment` 之间。测试断言 `segments[0]`/`[1]`（identity + conventions）跨所有模式逐字不变。
+> - plan 批准的交互走新增的 `Prompter.approve()`（`confirm()` 的 `[a] always` 档对"批准一个计划"没意义）。
+> - 非交互 `--mode plan` 实测是"管道喂一行到 REPL"（stdin 非 TTY 即触发 `endsRun`），与 `--mode plan "prompt"` 一次性路径等价；两条都验证过。
+> - `mergeSettings` 里补了 `planApprovedMode` 的透传（原来显式重建 `permissions` 对象会把它吃掉）。
 
 ### 3.1 loop 需要的两处最小扩展
 

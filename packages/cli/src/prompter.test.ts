@@ -105,6 +105,7 @@ describe('ReadlinePrompter.confirm', () => {
 describe('interactiveAskHandler', () => {
   const fakePrompter = (result: Awaited<ReturnType<Prompter['confirm']>>): Prompter => ({
     confirm: async () => result,
+    approve: async () => ({ approved: false }),
     askText: async () => '',
     close: () => {},
   });

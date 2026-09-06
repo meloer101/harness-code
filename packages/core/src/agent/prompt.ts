@@ -11,6 +11,7 @@
  */
 
 import type { SystemSegment } from '../provider/types.js';
+import type { PermissionMode } from '../permissions/types.js';
 
 const IDENTITY = "You are a coding agent working directly in a developer's codebase through tool calls.";
 
@@ -26,20 +27,39 @@ Match the style already in the file you're editing: naming, comment density, idi
 Lead with the conclusion or the change you made, in plain language, in as few words as stay clear. Skip preamble like "Sure, I can help with that" or restating the request back. When a decision isn't obvious from the change itself, say why in one short sentence — the goal is that someone skimming your output understands both what changed and, when it's not self-evident, why. Say plainly when you're unsure rather than guessing with confidence.
 </output_style>`;
 
+const PLAN_MODE = `<plan_mode>
+You are in plan mode. Do not change anything yet — investigate, then propose a plan and wait for approval.
+
+1. Read the actual code first. Use \`read\`, \`glob\` and \`grep\` to open every file you would touch; do not plan against assumptions about code you have not looked at.
+2. Then write the plan: what problem it solves, exactly which files and functions change, the order of steps, and how each step is verified.
+3. Call \`exit_plan_mode\` with the plan to hand it over. If it is not approved, revise and call it again.
+
+Write operations are rejected in this mode. The only writable path is \`.agent/plans/\`, and \`exit_plan_mode\` handles that for you.
+</plan_mode>`;
+
 export interface BuildAgentSystemPromptOptions {
   cwd: string;
   /** Defaults to `process.platform`; parameterized so this is testable without mocking globals. */
   platform?: string;
+  /** When `plan`, a plan-mode overlay is appended after the cacheable prefix. */
+  mode?: PermissionMode;
 }
 
 export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): SystemSegment[] {
   const platform = opts.platform ?? process.platform;
-  return [
+  const segments: SystemSegment[] = [
     { id: 'identity', text: IDENTITY },
     { id: 'conventions', text: CONVENTIONS, cacheBreakpoint: true },
-    {
-      id: 'environment',
-      text: `Working directory: ${opts.cwd}\nPlatform: ${platform}\n\nPaths in tool calls are resolved against the working directory above unless given as absolute paths.`,
-    },
   ];
+  // Must sit *after* the cacheBreakpoint conventions segment: this text varies
+  // with the mode, and in the cacheable prefix it would wreck the prompt-cache
+  // hit rate across turns.
+  if (opts.mode === 'plan') {
+    segments.push({ id: 'plan_mode', text: PLAN_MODE });
+  }
+  segments.push({
+    id: 'environment',
+    text: `Working directory: ${opts.cwd}\nPlatform: ${platform}\n\nPaths in tool calls are resolved against the working directory above unless given as absolute paths.`,
+  });
+  return segments;
 }

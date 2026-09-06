@@ -35,8 +35,16 @@ export interface ConfirmResult {
   feedback?: string;
 }
 
+export interface ApproveRequest {
+  title: string;
+  body: string;
+  signal?: AbortSignal;
+}
+
 export interface Prompter {
   confirm(req: ConfirmRequest): Promise<ConfirmResult>;
+  /** Show a body of text (a plan) and collect approve / revise-with-feedback. */
+  approve(req: ApproveRequest): Promise<{ approved: boolean; feedback?: string }>;
   askText(query: string, signal?: AbortSignal): Promise<string>;
   close(): void;
 }
@@ -110,6 +118,29 @@ class ReadlinePrompter implements Prompter {
       // Anything else denies; ask why so the model gets a usable reason.
       const feedback = (await this.question('  why (optional, Enter to skip): ', req.signal)).trim();
       return feedback ? { choice: 'deny', feedback } : { choice: 'deny' };
+    });
+  }
+
+  approve(req: ApproveRequest): Promise<{ approved: boolean; feedback?: string }> {
+    return this.enqueue(async () => {
+      if (req.signal?.aborted) return { approved: false, feedback: '用户中断' };
+
+      const block = [
+        `\n\x1b[1m? ${req.title}\x1b[0m`,
+        ...req.body.split('\n').map((l) => `  ${l}`),
+        '',
+        '  [y] approve and start implementing   [n] revise',
+        '> ',
+      ].join('\n');
+
+      const raw = (await this.question(block, req.signal)).trim().toLowerCase();
+      if (req.signal?.aborted) return { approved: false, feedback: '用户中断' };
+      if (raw === 'y' || raw === 'yes') return { approved: true };
+
+      const feedback = (
+        await this.question('  what should change (optional): ', req.signal)
+      ).trim();
+      return feedback ? { approved: false, feedback } : { approved: false };
     });
   }
 

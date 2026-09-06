@@ -28,6 +28,8 @@ export interface PermissionConfig {
   allow?: string[];
   ask?: string[];
   deny?: string[];
+  /** Mode to switch to after a plan is approved. Defaults to `acceptEdits`. */
+  planApprovedMode?: PermissionMode;
 }
 
 export interface EvaluateRequest {

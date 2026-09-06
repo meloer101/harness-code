@@ -1,5 +1,5 @@
 import { inspectBash } from './bash-ast.js';
-import { KNOWN_TOOLS, READ_ONLY_TOOLS } from './defaults.js';
+import { KNOWN_TOOLS, PLANS_DIR_PREFIX, READ_ONLY_TOOLS } from './defaults.js';
 import { ruleMatchesBash, ruleMatchesPath } from './match.js';
 import { parseRule } from './parse.js';
 import { PathEscapeError, isSensitivePath, relativeToWorkspace, resolveInWorkspace } from './paths.js';
@@ -66,7 +66,21 @@ export class PermissionEngine {
       return this.evaluateTodo();
     }
 
+    if (tool === 'exit_plan_mode') {
+      return this.evaluateExitPlanMode();
+    }
+
     return this.evaluatePathTool(tool, req);
+  }
+
+  /**
+   * `exit_plan_mode` still honours an explicit deny rule, but is otherwise always
+   * allowed — the real gate is the human approval the tool itself performs.
+   */
+  private evaluateExitPlanMode(): PermissionVerdict {
+    const denied = this.deny.find((r) => r.tool === 'exit_plan_mode');
+    if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
+    return { decision: 'allow' };
   }
 
   private evaluateTodo(): PermissionVerdict {
@@ -167,16 +181,33 @@ export class PermissionEngine {
       if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
     }
 
-    return this.modeDefault(tool, req.readOnly || READ_ONLY_TOOLS.has(tool));
+    return this.modeDefault(tool, req.readOnly || READ_ONLY_TOOLS.has(tool), rel);
   }
 
-  private modeDefault(tool: string, readOnly: boolean): PermissionVerdict {
+  private modeDefault(tool: string, readOnly: boolean, rel?: string): PermissionVerdict {
     switch (this.mode) {
       case 'yolo':
         return { decision: 'allow' };
       case 'readOnly':
+        if (readOnly || tool === 'todo') return { decision: 'allow' };
+        return {
+          decision: 'deny',
+          reason: `"${tool}" is not allowed in ${this.mode} mode`,
+        };
       case 'plan':
         if (readOnly || tool === 'todo') return { decision: 'allow' };
+        // The one write path plan mode leaves open: the plan file itself.
+        // `rel` is relative to workspaceRoot (--cwd); when --cwd is a project
+        // subdirectory, `.agent` sits outside the cage and this never matches —
+        // but exit_plan_mode writes its file through fs directly, so the main
+        // path is unaffected.
+        if (
+          (tool === 'write' || tool === 'edit') &&
+          rel !== undefined &&
+          rel.startsWith(PLANS_DIR_PREFIX)
+        ) {
+          return { decision: 'allow' };
+        }
         return {
           decision: 'deny',
           reason: `"${tool}" is not allowed in ${this.mode} mode`,

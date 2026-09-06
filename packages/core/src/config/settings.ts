@@ -108,6 +108,7 @@ export function mergeSettings(base: Settings, layer: Settings): Settings {
   if (base.permissions || layer.permissions) {
     merged.permissions = {
       mode: layer.permissions?.mode ?? base.permissions?.mode,
+      planApprovedMode: layer.permissions?.planApprovedMode ?? base.permissions?.planApprovedMode,
       allow: [...(base.permissions?.allow ?? []), ...(layer.permissions?.allow ?? [])],
       ask: [...(base.permissions?.ask ?? []), ...(layer.permissions?.ask ?? [])],
       deny: [...(base.permissions?.deny ?? []), ...(layer.permissions?.deny ?? [])],

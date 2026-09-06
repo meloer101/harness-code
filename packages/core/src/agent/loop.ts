@@ -30,6 +30,7 @@ import type { ToolResult } from '../tools/types.js';
 import { errorMessage } from '../tools/util.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks, PermissionDecision, TurnContext } from './hooks.js';
+import type { AgentControl } from './control.js';
 import { SessionState } from './session.js';
 import type { SessionRecorder } from './session.js';
 
@@ -39,6 +40,7 @@ export type AgentStopReason =
   | 'max_cost'
   | 'max_tokens'
   | 'context_limit'
+  | 'stopped_by_tool'
   | 'aborted'
   | 'error';
 
@@ -79,6 +81,8 @@ export interface AgentLoopOptions {
   /** Cap on concurrently running read-only tool calls within one turn. */
   concurrency?: number;
   signal?: AbortSignal;
+  /** Passed through to every tool's `ctx.control`. */
+  control?: AgentControl;
   onEvent?(event: AgentEvent): void;
 }
 
@@ -202,10 +206,12 @@ export class AgentLoop {
       }
 
       const calls = toolUsesOf(response.content);
-      const resultBlocks = await this.runToolCalls(calls, turnCtx);
-      const userMessage: Message = { role: 'user', content: resultBlocks };
+      const { blocks, endsRun } = await this.runToolCalls(calls, turnCtx);
+      const userMessage: Message = { role: 'user', content: blocks };
       messages.push(userMessage);
       await this.opts.recorder?.recordMessage(userMessage);
+
+      if (endsRun) return this.stop(messages, usage, 'stopped_by_tool');
 
       prevUsage = response.usage;
       appendedTokens = estimateMessageTokens([userMessage]);
@@ -248,7 +254,7 @@ export class AgentLoop {
   private async runToolCalls(
     calls: ToolUseBlock[],
     turnCtx: TurnContext,
-  ): Promise<ToolResultBlock[]> {
+  ): Promise<{ blocks: ToolResultBlock[]; endsRun: boolean }> {
     const decisions: Decision[] = await Promise.all(
       calls.map(async (call) => ({
         call,
@@ -281,7 +287,7 @@ export class AgentLoop {
     await runWithConcurrency(parallel, this.concurrency, runOne);
     for (const d of serial) await runOne(d);
 
-    return calls.map((call) => {
+    const blocks = calls.map((call) => {
       const result = results.get(call.id);
       return {
         type: 'tool_result' as const,
@@ -290,6 +296,8 @@ export class AgentLoop {
         ...(result?.isError ? { isError: true } : {}),
       };
     });
+    const endsRun = [...results.values()].some((r) => r.endsRun === true);
+    return { blocks, endsRun };
   }
 
   private async executeOne(call: ToolUseBlock, decision: PermissionDecision): Promise<ToolResult> {
@@ -315,6 +323,7 @@ export class AgentLoop {
         cwd: this.opts.cwd,
         session: this.session,
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
+        ...(this.opts.control ? { control: this.opts.control } : {}),
       });
     } catch (err) {
       return { content: `Tool ${call.name} threw: ${errorMessage(err)}`, isError: true };

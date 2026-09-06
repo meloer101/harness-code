@@ -19,6 +19,7 @@
 > | 2026-09-06 | Phase 3 bash 审查完全用 AST | 命令替换（`$(...)`/反引号）的硬拒绝用了一个字符串正则前置检查，其余复合命令拆分和高危规则判定才是 `shell-quote` AST | `shell-quote` 本身不会对命令替换报错或拒绝解析，AST 遍历不到"这里有命令替换"这个事实，正则前置检查更直接；不影响"逐段 AST 判定"的核心设计 |
 > | 2026-09-06 | Phase 3 CLI 权限模式选择 | `hc agent` 非交互场景下固定用 `nonInteractiveAskHandler`（ask 一律 deny），交互式 ask handler 留空 | 目前只有一次性 CLI，没有人可以回答"是否允许"；交互式 handler 等 Phase 9 TUI 落地后再接，`AskHandler` 接口已经预留好 |
 > | 2026-09-06 | macOS `sandbox-exec` profile 标为 stretch，先不做 | 提前做完：`permissions/macos-sandbox.ts`，workspace 读写、其余只读，`(allow default)` 不动读/网络/进程 | 真实跑通 `hc agent` 后发现纯文本审查（AST + 黑名单）拦不住"合法工具的普通用法"，比如 `echo x > /tmp/y` 这种重定向——不在任何硬拒绝规则里，也不该被枚举式加规则去堵；OS 级沙箱是唯一能兜住"审查漏判"的层。手动实测：workspace 外写入被内核拒绝（`Operation not permitted`），workspace 内写入正常。同一次实测也发现 `Bash(node:*)` 这类允许规则会被 `node -e` 逃逸成近乎无限制执行，顺带把 `python/perl/ruby/node` 的内联求值旗标改成无条件硬拒绝 |
+> | 2026-09-06 | Phase 4 的 token 预算 / 上下文可见性、Phase 6 的 Plan Mode 按原顺序做 | 提前到中间里程碑 **Phase 3.5**（见 [PHASE-3.5.md](./PHASE-3.5.md)）：token 计量 + 阈值告警 + 优雅停止、`ask` 真正弹问、完整 Plan Mode（探索→出计划→批准→切换执行） | f63eb8c 落地 REPL 后"没人能回答 ask"的前提消失；长会话撞 provider 400 是日常可用性硬门槛，只做可见性成本很低。真正的压缩（`compactor.ts` / `ledger.ts` / `AGENTS.md` 项目记忆）仍留在 Phase 4 |
 
 ---
 

@@ -13,6 +13,7 @@
 import { z } from 'zod';
 
 import type { JSONSchema, ToolDefinition } from '../provider/types.js';
+import type { AgentControl } from '../agent/control.js';
 import type { SessionState } from '../agent/session.js';
 
 export interface ToolContext {
@@ -20,11 +21,15 @@ export interface ToolContext {
   cwd: string;
   signal?: AbortSignal;
   session: SessionState;
+  /** Channel back to the harness. Present only when the loop was given one. */
+  control?: AgentControl;
 }
 
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** Set by a tool that is a deliberate end of the run (e.g. `exit_plan_mode` with no interactive approver). */
+  endsRun?: boolean;
 }
 
 export interface ToolSpec<TInput = unknown> {
