@@ -19,6 +19,8 @@ export type AskHandler = (req: {
   toolName: string;
   input: unknown;
   reason: string;
+  /** Aborts when the turn is cancelled (Ctrl+C); the handler should settle as a deny. */
+  signal?: AbortSignal;
 }) => Promise<PermissionDecision>;
 
 export interface PermissionConfig {

@@ -4,7 +4,7 @@
 > 与 PLAN.md 同样的约定——**完成后在小节标注状态，不要事后重写本文**，
 > 计划与实际的偏差本身就是有价值的记录。
 >
-> **状态：进行中** —— Step 1 已完成（2026-09-06），Step 2 / Step 3 未开始。
+> **状态：进行中** —— Step 1 / Step 2 已完成（2026-09-06），Step 3 未开始。
 
 ## Context
 
@@ -109,6 +109,13 @@ CLI 增加 `--max-tokens <n>`。
 ---
 
 ## Step 2 — 权限 `ask` 真正弹问
+
+> **状态：已完成（2026-09-06）。** 偏差：
+> - `PermissionEngine` 顺带加了 `getMode()`（Step 3 CLI 要读当前模式）。
+> - `confirm` 的整个提示块通过 `rl.question` 的 query 字符串输出（而不是无条件 `process.stdout.write`），这样它落在 readline 自己的输出流上、可被注入测试。
+> - `confirm` 的选项对象加了 `alwaysLabel?`（doc 的接口里没有）——prompter 不知道工具名，靠调用方传入渲染 `[a] always allow Bash`。
+> - 交互式 ask handler 提成 `prompter.ts` 的 `interactiveAskHandler(engine, prompter, opts)` 工厂，好用假 prompter 单测；`index.ts` 只做 `process.stdin.isTTY` 分流和 `onBeforePrompt`/`echo` 回调。
+> - 非交互（非 TTY）分流点在 `index.ts` 内联，未单独抽函数——`nonInteractiveAskHandler` 的确定性拒绝本身已有 loop 层测试覆盖。
 
 ### 2.1 引擎侧的两个小口子
 

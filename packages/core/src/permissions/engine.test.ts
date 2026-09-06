@@ -105,6 +105,53 @@ describe('PermissionEngine', () => {
     if (v.decision === 'deny') expect(v.reason).toMatch(/plan mode/);
   });
 
+  it('addAllowRule whitelists a whole tool for the rest of the session', async () => {
+    const e = engine({ mode: 'ask' });
+    expect((await e.evaluate({ toolName: 'bash', input: { command: 'npm test' }, readOnly: false })).decision).toBe(
+      'ask',
+    );
+    e.addAllowRule('Bash');
+    expect((await e.evaluate({ toolName: 'bash', input: { command: 'npm test' }, readOnly: false })).decision).toBe(
+      'allow',
+    );
+    expect((await e.evaluate({ toolName: 'bash', input: { command: 'git push' }, readOnly: false })).decision).toBe(
+      'allow',
+    );
+  });
+
+  it('a runtime allow rule does not defeat sensitive-file protection', async () => {
+    const e = engine({ mode: 'ask' });
+    e.addAllowRule('Read');
+    const v = await e.evaluate({ toolName: 'read', input: { path: '.env' }, readOnly: true });
+    expect(v.decision).toBe('deny');
+  });
+
+  it('setMode changes later verdicts', async () => {
+    const e = engine({ mode: 'plan' });
+    expect(e.getMode()).toBe('plan');
+    expect(
+      (await e.evaluate({ toolName: 'write', input: { path: 'a.txt', content: 'x' }, readOnly: false })).decision,
+    ).toBe('deny');
+    e.setMode('acceptEdits');
+    expect(
+      (await e.evaluate({ toolName: 'write', input: { path: 'a.txt', content: 'x' }, readOnly: false })).decision,
+    ).toBe('allow');
+  });
+
+  it('once addAllowRule fires, the hook stops asking for that tool', async () => {
+    const e = engine({ mode: 'ask' });
+    let asks = 0;
+    const hooks = createPermissionHooks(e, async ({ toolName }) => {
+      asks++;
+      e.addAllowRule(toolName);
+      return { decision: 'allow' };
+    });
+    const call = { type: 'tool_use' as const, id: '1', name: 'bash', input: { command: 'ls' } };
+    await hooks.onBeforeToolCall!(call, { turn: 1, cwd: root });
+    await hooks.onBeforeToolCall!(call, { turn: 2, cwd: root });
+    expect(asks).toBe(1);
+  });
+
   it('yolo still hard-denies rm -rf /', async () => {
     const e = engine({ mode: 'yolo' });
     const v = await e.evaluate({

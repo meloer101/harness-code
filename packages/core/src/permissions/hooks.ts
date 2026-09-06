@@ -10,14 +10,19 @@ export const nonInteractiveAskHandler: AskHandler = async ({ reason }) => ({
 
 export function createPermissionHooks(engine: PermissionEngine, ask: AskHandler): AgentHooks {
   return {
-    async onBeforeToolCall(call) {
+    async onBeforeToolCall(call, ctx) {
       const verdict = await engine.evaluate({
         toolName: call.name,
         input: call.input,
         readOnly: READ_ONLY_TOOLS.has(call.name.toLowerCase()),
       });
       if (verdict.decision === 'ask') {
-        return ask({ toolName: call.name, input: call.input, reason: verdict.reason });
+        return ask({
+          toolName: call.name,
+          input: call.input,
+          reason: verdict.reason,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
       }
       return verdict;
     },

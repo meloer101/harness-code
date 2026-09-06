@@ -20,7 +20,7 @@ export interface PermissionEngineOptions {
 
 export class PermissionEngine {
   private readonly workspaceRoot: string;
-  private readonly mode: PermissionMode;
+  private mode: PermissionMode;
   private readonly allow: PermissionRule[];
   private readonly askRules: PermissionRule[];
   private readonly deny: PermissionRule[];
@@ -31,6 +31,25 @@ export class PermissionEngine {
     this.allow = opts.allow.map(parseRule);
     this.askRules = opts.ask.map(parseRule);
     this.deny = opts.deny.map(parseRule);
+  }
+
+  getMode(): PermissionMode {
+    return this.mode;
+  }
+
+  /** Switch the active mode. Used by Step 3's post-approval transition out of plan mode. */
+  setMode(mode: PermissionMode): void {
+    this.mode = mode;
+  }
+
+  /**
+   * Append an allow rule at runtime — the "always allow, this session" path.
+   * Whole-tool granularity only (`Bash`, not `Bash(npm test:*)`); reverse-engineering
+   * a safe specifier prefix from one concrete call is error-prone, so this stays
+   * coarse and the caller echoes exactly what was added.
+   */
+  addAllowRule(raw: string): void {
+    this.allow.push(parseRule(raw));
   }
 
   async evaluate(req: EvaluateRequest): Promise<PermissionVerdict> {

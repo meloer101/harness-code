@@ -30,11 +30,14 @@ import {
   nonInteractiveAskHandler,
   rebuildSessionState,
 } from '@harness-code/core';
-import type { AgentEvent, Message, ModelRequest, PermissionMode } from '@harness-code/core';
+import type { AgentEvent, AskHandler, Message, ModelRequest, PermissionMode } from '@harness-code/core';
 import { resolveBudgets } from './budgets.js';
+import { createPrompter, interactiveAskHandler } from './prompter.js';
+import type { Prompter } from './prompter.js';
 import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { Interface } from 'node:readline';
 
 /**
  * Minimal `.env` loader: `KEY=value` per line, `#` comments, optional quotes.
@@ -251,10 +254,27 @@ program
         ask: [...(permissions.ask ?? []), ...opts.ask],
         deny: [...(permissions.deny ?? []), ...opts.deny],
       });
-      // Neither a one-shot run nor this REPL has anyone to answer an "ask" verdict
-      // interactively (that needs Phase 9's TUI), so it must deterministically deny
-      // rather than hang or silently proceed.
-      const hooks = createPermissionHooks(engine, nonInteractiveAskHandler);
+
+      // The REPL assigns this before the first turn runs; one-shot leaves it
+      // undefined and the prompter makes its own readline on demand.
+      let sharedRl: Interface | undefined;
+      let prompter: Prompter | undefined;
+      const getPrompter = (): Prompter => (prompter ??= createPrompter(sharedRl));
+
+      // Flush a half-open dim [thinking] block before a prompt, so the question
+      // doesn't inherit the grey escape. Reassigned once `onEvent` is defined.
+      let flushThinking = (): void => {};
+
+      // With a REPL (f63eb8c) there is now a human present to answer an "ask"
+      // verdict — but only when stdin is a TTY. Piped / CI input keeps the
+      // deterministic deny so scripted runs stay scriptable.
+      const interactiveAsk: AskHandler = (req) =>
+        interactiveAskHandler(engine, getPrompter(), {
+          onBeforePrompt: () => flushThinking(),
+          echo: (line) => process.stderr.write(`\x1b[2m${line}\x1b[0m\n`),
+        })(req);
+      const askHandler: AskHandler = process.stdin.isTTY ? interactiveAsk : nonInteractiveAskHandler;
+      const hooks = createPermissionHooks(engine, askHandler);
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
       if (!isSandboxExecAvailable()) {
         process.stderr.write(
@@ -272,16 +292,20 @@ program
       let contextWarned = false;
 
       let thinkingOpen = false;
+      const closeThinking = (): void => {
+        if (thinkingOpen) {
+          process.stderr.write('\x1b[0m\n');
+          thinkingOpen = false;
+        }
+      };
+      flushThinking = closeThinking;
       const onEvent = (event: AgentEvent): void => {
         switch (event.type) {
           case 'context': {
             lastContext = event;
             if (event.ratio >= 0.8 && !contextWarned) {
               contextWarned = true;
-              if (thinkingOpen) {
-                process.stderr.write('\x1b[0m\n');
-                thinkingOpen = false;
-              }
+              closeThinking();
               process.stderr.write(
                 `\x1b[33mcontext ${fmtTokens(event.usedTokens)}/${fmtTokens(event.windowTokens)} ` +
                   `(${Math.round(event.ratio * 100)}%) — approaching the window limit. ` +
@@ -298,10 +322,7 @@ program
             process.stderr.write(event.text);
             break;
           case 'text_delta':
-            if (thinkingOpen) {
-              process.stderr.write('\x1b[0m\n');
-              thinkingOpen = false;
-            }
+            closeThinking();
             process.stdout.write(event.text);
             break;
           case 'tool_call_start':
@@ -360,8 +381,12 @@ program
       }
 
       if (prompt !== undefined) {
-        const result = await runOneTurn(prompt, priorMessages);
-        process.stderr.write(`\x1b[2msession ${recorder.id} · stop: ${result.stopReason}\x1b[0m\n`);
+        try {
+          const result = await runOneTurn(prompt, priorMessages);
+          process.stderr.write(`\x1b[2msession ${recorder.id} · stop: ${result.stopReason}\x1b[0m\n`);
+        } finally {
+          prompter?.close(); // no-op unless an interactive prompt made its own readline
+        }
         return;
       }
 
@@ -374,6 +399,9 @@ program
 
       let messages = priorMessages;
       const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+      // The interactive ask handler borrows this rl: rl.question() intercepts the
+      // next line without emitting 'line', so it doesn't fight the queue below.
+      sharedRl = rl;
 
       // Ctrl+C while idle at the prompt closes the session; while a turn is running,
       // runOneTurn's own SIGINT listener (registered above) takes over instead — this
