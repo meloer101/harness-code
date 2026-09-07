@@ -12,6 +12,7 @@
 
 import type { SystemSegment } from '../provider/types.js';
 import type { PermissionMode } from '../permissions/types.js';
+import { orderSystemSegments } from '../context/cache.js';
 
 const IDENTITY = "You are a coding agent working directly in a developer's codebase through tool calls.";
 
@@ -77,5 +78,6 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
     id: 'environment',
     text: `Working directory: ${opts.cwd}\nPlatform: ${platform}\n\nPaths in tool calls are resolved against the working directory above unless given as absolute paths.`,
   });
-  return segments;
+  // Enforce the cache-stable order regardless of push order above.
+  return orderSystemSegments(segments);
 }

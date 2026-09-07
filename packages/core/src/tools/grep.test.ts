@@ -44,4 +44,14 @@ describe('grepWithJs', () => {
     const result = await grepWithJs({ pattern: '(unterminated' }, cwd);
     expect(result.isError).toBe(true);
   });
+
+  it('caps at 200 matches and says how many it showed, not silently', async () => {
+    const many = Array.from({ length: 500 }, (_, i) => `hit line ${i}`).join('\n');
+    await writeFile(join(cwd, 'src', 'big.ts'), many, 'utf8');
+
+    const result = await grepWithJs({ pattern: 'hit line' }, cwd);
+
+    expect(result.content).toMatch(/showing 200 of at least 200 matches/);
+    expect(result.content.split('\n').filter((l) => l.includes('hit line'))).toHaveLength(200);
+  });
 });

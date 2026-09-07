@@ -4,10 +4,11 @@ A coding agent built from scratch — MCP client and server, skills, plan mode,
 and the harness engineering underneath: context management, a permission
 sandbox, sub-agents, and an eval suite that measures whether any of it works.
 
-> Status: **Phase 3 of 10**. The provider compatibility layer, agent loop,
-> tool set, and permission sandbox are complete and tested. Context
-> engineering, MCP, skills, plan mode, sub-agents, telemetry and the TUI are
-> still ahead — see [the plan](#roadmap).
+> Status: **Phase 4 of 10**. The provider compatibility layer, agent loop,
+> tool set, permission sandbox, plan mode, and context engineering (compaction,
+> project memory, prompt-cache stability, per-category accounting) are complete
+> and tested. MCP, skills, sub-agents, telemetry and the TUI are still ahead —
+> see [the plan](#roadmap).
 
 ## Why this exists
 
@@ -148,7 +149,7 @@ evals             benchmark tasks and fixtures
 | 1 | Provider compatibility layer | done |
 | 2 | Agent loop and tools | done |
 | 3 | Permissions and sandbox | done |
-| 4 | Context engineering — compaction, project memory, cache stability | compaction + project memory + edit-staleness done; output truncation + cache telemetry next |
+| 4 | Context engineering — compaction, project memory, truncation, cache stability | done |
 | 5 | MCP client and server | |
 | 6 | Skills and plan mode | |
 | 7 | Sub-agents and parallelism | |

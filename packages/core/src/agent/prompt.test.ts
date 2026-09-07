@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { SYSTEM_SEGMENT_ORDER } from '../context/cache.js';
 import { buildAgentSystemPrompt } from './prompt.js';
 
 describe('buildAgentSystemPrompt', () => {
@@ -74,5 +75,18 @@ describe('buildAgentSystemPrompt', () => {
     const withMem = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', projectMemory: 'notes' });
     expect(withMem[0]).toEqual(base[0]);
     expect(withMem[1]).toEqual(base[1]);
+  });
+
+  it('always emits segments as a subsequence of SYSTEM_SEGMENT_ORDER', () => {
+    for (const mode of ['ask', 'plan', 'acceptEdits', 'readOnly', 'yolo'] as const) {
+      for (const projectMemory of [undefined, 'notes']) {
+        const ids = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', mode, projectMemory }).map(
+          (s) => s.id,
+        );
+        const ranks = ids.map((id) => (SYSTEM_SEGMENT_ORDER as readonly string[]).indexOf(id));
+        expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+        expect(ranks).not.toContain(-1);
+      }
+    }
   });
 });

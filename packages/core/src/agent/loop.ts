@@ -8,6 +8,7 @@
  */
 
 import { estimateCostUSD } from '../provider/capabilities.js';
+import { analyzeStableParts, breakdownFrom } from '../context/budget.js';
 import { estimateMessageTokens, estimateRequestTokens } from '../context/tokenizer.js';
 import type { ResolvedModel } from '../provider/router.js';
 import {
@@ -28,6 +29,7 @@ import type {
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolResult } from '../tools/types.js';
 import { errorMessage } from '../tools/util.js';
+import type { ContextBreakdown } from '../context/budget.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks, PermissionDecision, TurnContext } from './hooks.js';
 import type { AgentControl } from './control.js';
@@ -50,7 +52,13 @@ export type AgentEvent =
   | { type: 'tool_call_start'; id: string; name: string; input: unknown }
   | { type: 'tool_call_end'; id: string; name: string; result: ToolResult }
   | { type: 'turn_end'; usage: Usage }
-  | { type: 'context'; usedTokens: number; windowTokens: number; ratio: number }
+  | {
+      type: 'context';
+      usedTokens: number;
+      windowTokens: number;
+      ratio: number;
+      breakdown: ContextBreakdown;
+    }
   | { type: 'compaction'; tokensBefore: number; tokensAfter: number; keptTurns: number }
   | { type: 'stop'; reason: AgentStopReason };
 
@@ -137,6 +145,13 @@ export class AgentLoop {
       1,
       this.opts.model.capabilities.contextWindow - this.maxOutputTokens,
     );
+    // The fixed buckets — system / project memory / tool schemas — don't change
+    // within a run, so cost them once. `history` is then the remainder of the
+    // anchored total, no full re-flatten per turn.
+    const stableParts = analyzeStableParts({
+      system: this.opts.system,
+      tools: this.opts.tools.definitions(),
+    });
     // Anchored on the endpoint's real `usage` from the previous turn, so
     // estimation error only accrues on the tool_result messages we appended
     // since — not on a full-history heuristic pass every turn.
@@ -218,7 +233,13 @@ export class AgentLoop {
         }
       }
 
-      this.emit({ type: 'context', usedTokens: contextTokens, windowTokens: availableWindow, ratio });
+      this.emit({
+        type: 'context',
+        usedTokens: contextTokens,
+        windowTokens: availableWindow,
+        ratio,
+        breakdown: breakdownFrom(stableParts, contextTokens),
+      });
 
       if (ratio >= this.contextStopRatio) {
         return this.stop(messages, usage, 'context_limit');

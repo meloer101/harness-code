@@ -20,8 +20,10 @@ import {
   SessionState,
   ToolRegistry,
   VERSION,
+  addUsage,
   buildAgentSystemPrompt,
   builtinTools,
+  cacheHitRate,
   createCompactor,
   createPermissionEngine,
   createPermissionHooks,
@@ -39,9 +41,11 @@ import type {
   AgentControl,
   AgentEvent,
   AskHandler,
+  ContextBreakdown,
   Message,
   ModelRequest,
   PermissionMode,
+  Usage,
 } from '@harness-code/core';
 import { resolveBudgets } from './budgets.js';
 import { createPrompter, interactiveAskHandler } from './prompter.js';
@@ -355,8 +359,11 @@ program
             };
       const hooks = mergeHooks(createPermissionHooks(engine, askHandler), compactHook);
 
-      let lastContext: { usedTokens: number; windowTokens: number; ratio: number } | undefined;
+      let lastContext: ContextSnapshot | undefined;
       let contextWarned = false;
+      // Cumulative across every turn of this session (each AgentLoop.run() resets
+      // its own counter), for the cache-hit-rate summary at the end.
+      let sessionUsage: Usage | undefined;
 
       let thinkingOpen = false;
       const closeThinking = (): void => {
@@ -375,7 +382,7 @@ program
               closeThinking();
               process.stderr.write(
                 `\x1b[33mcontext ${fmtTokens(event.usedTokens)}/${fmtTokens(event.windowTokens)} ` +
-                  `(${Math.round(event.ratio * 100)}%) — approaching the window limit. ` +
+                  `(${Math.round(event.ratio * 100)}%) [${fmtBreakdown(event.breakdown)}] — approaching the window limit. ` +
                   `History is compacted automatically near ~92%${opts.compact === false ? ' (disabled by --no-compact)' : ''}.\x1b[0m\n`,
               );
             }
@@ -460,6 +467,7 @@ program
           const result = await buildLoop(controller.signal).run([...messages, userMessage]);
           process.stdout.write('\n');
           printUsage(resolved.ref, result.usage, undefined, undefined, lastContext);
+          sessionUsage = sessionUsage ? addUsage(sessionUsage, result.usage) : result.usage;
           const note = describeStop(result.stopReason);
           if (note) process.stderr.write(`\x1b[2m${note}\x1b[0m\n`);
           return result;
@@ -471,7 +479,9 @@ program
       if (prompt !== undefined) {
         try {
           const result = await runOneTurn(prompt, priorMessages);
-          process.stderr.write(`\x1b[2msession ${recorder.id} · stop: ${result.stopReason}\x1b[0m\n`);
+          process.stderr.write(
+            `\x1b[2msession ${recorder.id} · stop: ${result.stopReason}${cacheSummary(sessionUsage)}\x1b[0m\n`,
+          );
         } finally {
           prompter?.close(); // no-op unless an interactive prompt made its own readline
         }
@@ -536,7 +546,7 @@ program
 
       rl.on('close', () => {
         void queue.finally(() => {
-          process.stderr.write(`\n\x1b[2msession ${recorder.id}\x1b[0m\n`);
+          process.stderr.write(`\n\x1b[2msession ${recorder.id}${cacheSummary(sessionUsage)}\x1b[0m\n`);
           process.exit(0);
         });
       });
@@ -555,6 +565,16 @@ interface ContextSnapshot {
   usedTokens: number;
   windowTokens: number;
   ratio: number;
+  breakdown?: ContextBreakdown;
+}
+
+/** `sys 2.1k · mem 0.4k · tools 3.0k · hist 6.2k` — the parts of the window. */
+function fmtBreakdown(b: ContextBreakdown): string {
+  return (
+    `sys ${fmtTokens(b.system)}` +
+    (b.projectMemory > 0 ? ` · mem ${fmtTokens(b.projectMemory)}` : '') +
+    ` · tools ${fmtTokens(b.toolSchemas)} · hist ${fmtTokens(b.history)}`
+  );
 }
 
 function printUsage(
@@ -569,18 +589,27 @@ function printUsage(
     `in ${usage.inputTokens}`,
     `out ${usage.outputTokens}`,
   ];
-  if (usage.cachedInputTokens > 0) bits.push(`cached ${usage.cachedInputTokens}`);
+  if (usage.cachedInputTokens > 0) {
+    bits.push(`cached ${usage.cachedInputTokens} (${Math.round(cacheHitRate(usage) * 100)}%)`);
+  }
   if (usage.costUSD !== undefined) bits.push(`$${usage.costUSD.toFixed(5)}`);
   if (context) {
     bits.push(
       `ctx ${fmtTokens(context.usedTokens)}/${fmtTokens(context.windowTokens)} ` +
         `(${Math.round(context.ratio * 100)}%)`,
     );
+    if (context.breakdown) bits.push(fmtBreakdown(context.breakdown));
   }
   if (ttftMs !== undefined) bits.push(`ttft ${ttftMs}ms`);
   if (latencyMs !== undefined) bits.push(`total ${latencyMs}ms`);
   if (usage.estimated) bits.push('(token counts estimated)');
   process.stderr.write(`\x1b[2m${bits.join('  ·  ')}\x1b[0m\n`);
+}
+
+/** End-of-session prompt-cache line, or '' when nothing was cached. */
+function cacheSummary(usage: Usage | undefined): string {
+  if (!usage || usage.inputTokens === 0 || usage.cachedInputTokens === 0) return '';
+  return ` · cache ${Math.round(cacheHitRate(usage) * 100)}% of ${fmtTokens(usage.inputTokens)} input tokens`;
 }
 
 /** `12345` -> `12.3k`; small counts stay exact. */

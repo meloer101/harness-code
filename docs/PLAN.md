@@ -2,8 +2,8 @@
 
 > 本文件是项目的施工蓝图，与代码同仓库维护。
 >
-> **当前进度：Phase 3 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 + Phase 2 agent loop /
-> 工具集 + Phase 3 权限与沙箱）。
+> **当前进度：Phase 4 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 + Phase 2 agent loop /
+> 工具集 + Phase 3 权限与沙箱 + Phase 3.5 token 预算/交互确认/Plan Mode + Phase 4 上下文工程）。
 > 每个 Phase 完成后在下方对应小节标注状态，不要事后重写计划本身 ——
 > 计划和实际的偏差本身就是有价值的记录。
 >
@@ -22,6 +22,7 @@
 > | 2026-09-06 | Phase 4 的 token 预算 / 上下文可见性、Phase 6 的 Plan Mode 按原顺序做 | 提前到中间里程碑 **Phase 3.5**（见 [PHASE-3.5.md](./PHASE-3.5.md)）：token 计量 + 阈值告警 + 优雅停止、`ask` 真正弹问、完整 Plan Mode（探索→出计划→批准→切换执行） | f63eb8c 落地 REPL 后"没人能回答 ask"的前提消失；长会话撞 provider 400 是日常可用性硬门槛，只做可见性成本很低。真正的压缩（`compactor.ts` / `ledger.ts` / `AGENTS.md` 项目记忆）仍留在 Phase 4 |
 > | 2026-09-07 | Phase 4 一次做完（compactor + ledger + 项目记忆） | 拆成 **Phase 4a（本次，只做 `compactor.ts`）** 与 Phase 4b（`ledger.ts` + `AGENTS.md`/`CLAUDE.md`）。4a：`onContextPressure` 之外新增 `onCompact` hook，`≥0.92` 自动触发；机制学 Claude Code（阈值→整段摘要→用结果继续），digest 内容学 Manus（任务状态 + "协作/代码/工具/输出"风格备忘，以 `AGENT_CONVENTIONS` 为基线只记偏差）；摘要走主模型（`smallModel` 可选覆盖）；`--no-compact` 关闭；会话 `.jsonl` 存压缩后快照，`--resume` 尊重压缩边界 | compactor 是四块里最能量化的、也最影响日常可用性，先单独跑通并验证；ledger 与压缩协同（压缩时判断哪些文件内容可安全丢）留到 4b 一起做 |
 > | 2026-09-07 | Phase 4b：`ledger.ts` 独立模块，含"重复读折叠成指针" | **不做重复读折叠**；ledger 收窄为 `SessionState.readMtime()` + `edit`/`write` 的 mtime 失效检查（读之后文件被外部改动 → 拒绝并提示重新 read）。外加 `context/memory.ts`：`AGENTS.md`/`CLAUDE.md` 从项目根到 cwd 逐层加载（+ `~/.agent`），作为 `project_memory` 段插在 `conventions`（cacheBreakpoint）之后 | 模型重复 read 未改动文件多是合理的上下文刷新（lost-in-the-middle），给指针 stub 恰在最该帮忙时帮不上；compactor 落地后重复副本会在压缩时被整段摘要掉；未到阈值就折叠得回写活动历史、打断 KV-cache。失效检查和项目记忆才是没争议的价值 |
+> | 2026-09-07 | Phase 4 收尾：`truncate.ts` / `cache.ts` / `budget.ts` | `truncate.ts`：`truncateHeadTail`（行对齐头尾截断，从 bash 提取）+ `truncateList`（grep 现在报 "showing 200 of N" 而非静默截断）。`cache.ts`：`SYSTEM_SEGMENT_ORDER` + `orderSystemSegments`（前缀顺序从隐性约定变成 `buildAgentSystemPrompt` 收尾强制的契约）+ `cacheHitRate`（每轮 `cached N (P%)`、会话结束 `cache P% of Nk input`）。`budget.ts`：**只做分类占用核算**（`analyzeStableParts` + `context` 事件带 `breakdown`，CLI 显示 `sys/mem/tools/hist`）—— **不做配额器** | 现在唯一真实降级杠杆是压缩历史（已有），项目记忆有上限、工具输出有截断，配额器没有实际分支可做；真正需要配额是 skills 渐进式披露落地后（清单 token 是核心输入）。降级逻辑推到 Phase 6。`cacheBreakpoint` 字段对当前 OpenAI-compat 面是死配置，留给 Phase 7 原生 Anthropic provider |
 
 ---
 
@@ -132,7 +133,12 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 
 ---
 
-### Phase 4 — 上下文工程（3 天，重头戏）⬅ 下一步
+### Phase 4 — 上下文工程（3 天，重头戏）✅ 已完成（2026-09-07）
+
+> 落地情况见上方偏差记录表的 4a / 4b / 4 收尾三行。`tokenizer.ts` 在 Phase 3.5、
+> `compactor.ts` 在 4a、项目记忆 + 失效检查在 4b、`truncate.ts`/`cache.ts`/`budget.ts`
+> 在收尾。`budget.ts` 只做核算不做配额器（降级留 Phase 6）；`ledger.ts` 不独立成模块
+> （收窄进 `SessionState`）。60+ 轮长会话与"重复读增长近似 0"的原始验收标准按新方向调整。
 
 `context/`：
 - `tokenizer.ts` — `js-tiktoken` 计数，非 OpenAI 模型走启发式系数 + 用真实 usage 回归校准。

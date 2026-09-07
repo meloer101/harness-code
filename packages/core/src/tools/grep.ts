@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import fg from 'fast-glob';
 import { z } from 'zod';
 
+import { truncateList } from '../context/truncate.js';
 import { PathEscapeError, assertInsideWorkspace } from '../permissions/paths.js';
 import type { ToolResult, ToolSpec } from './types.js';
 import { errorMessage } from './util.js';
@@ -81,7 +82,10 @@ async function grepWithRipgrep(
       if (code === 0 || code === 1) {
         const lines = stdout.split('\n').filter((l) => l !== '');
         resolvePromise({
-          content: lines.length > 0 ? lines.slice(0, MAX_MATCHES).join('\n') : '(no matches)',
+          content:
+            lines.length > 0
+              ? truncateList(lines, MAX_MATCHES, { noun: 'matches' }).text
+              : '(no matches)',
         });
       } else {
         resolvePromise({ content: `rg exited with code ${code}: ${stderr}`, isError: true });
@@ -109,8 +113,9 @@ export async function grepWithJs(input: Input, searchPath: string): Promise<Tool
   });
 
   const matches: string[] = [];
+  let hitCap = false;
   for (const file of files) {
-    if (matches.length >= MAX_MATCHES) break;
+    if (hitCap) break;
     let text: string;
     try {
       text = await readFile(file, 'utf8');
@@ -118,9 +123,20 @@ export async function grepWithJs(input: Input, searchPath: string): Promise<Tool
       continue; // binary or unreadable; skip rather than fail the whole search
     }
     const lines = text.split('\n');
-    for (let i = 0; i < lines.length && matches.length < MAX_MATCHES; i++) {
+    for (let i = 0; i < lines.length; i++) {
+      if (matches.length >= MAX_MATCHES) {
+        hitCap = true; // there was at least one more line to scan
+        break;
+      }
       if (regex.test(lines[i] ?? '')) matches.push(`${file}:${i + 1}:${lines[i]}`);
     }
   }
-  return { content: matches.length > 0 ? matches.join('\n') : '(no matches)' };
+  if (matches.length === 0) return { content: '(no matches)' };
+  return {
+    content: truncateList(matches, MAX_MATCHES, {
+      noun: 'matches',
+      total: matches.length,
+      totalIsFloor: hitCap,
+    }).text,
+  };
 }

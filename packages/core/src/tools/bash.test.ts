@@ -59,7 +59,7 @@ describe('bashTool', () => {
       { command: 'node -e "process.stdout.write(\'x\'.repeat(50000))"' },
       ctx,
     );
-    expect(result.content).toContain('characters omitted');
+    expect(result.content).toMatch(/characters.*omitted/);
     expect(result.content.length).toBeLessThan(50_000);
   });
 

@@ -384,6 +384,32 @@ describe('AgentLoop', () => {
     expect(provider.callCount).toBe(0);
   });
 
+  it('emits a context breakdown whose parts sum to the used total', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    let ctx: { usedTokens: number; breakdown: { system: number; projectMemory: number; toolSchemas: number; history: number } } | undefined;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([
+        trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true }),
+      ]),
+      cwd: '/tmp',
+      system: [
+        { id: 'identity', text: 'you are an agent' },
+        { id: 'project_memory', text: 'use 2-space indent' },
+      ],
+      onEvent: (e) => {
+        if (e.type === 'context') ctx = e;
+      },
+    });
+
+    await loop.run([userText('hello there')]);
+
+    expect(ctx).toBeDefined();
+    const b = ctx!.breakdown;
+    expect(b.projectMemory).toBeGreaterThan(0);
+    expect(b.system + b.projectMemory + b.toolSchemas + b.history).toBe(ctx!.usedTokens);
+  });
+
   it('passes maxOutputTokens and temperature through to the ModelRequest', async () => {
     const provider = new ScriptedProvider([{ text: 'done' }]);
     const tools = new ToolRegistry([]);

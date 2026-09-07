@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { z } from 'zod';
 
+import { truncateHeadTail } from '../context/truncate.js';
 import { wrapCommand } from '../permissions/macos-sandbox.js';
 import { PathEscapeError, assertInsideWorkspace } from '../permissions/paths.js';
 import { sandboxedEnv } from '../permissions/sandbox.js';
@@ -87,7 +88,11 @@ export const bashTool: ToolSpec<Input> = {
       });
 
       child.on('close', (code) => {
-        const truncated = truncateOutput(output);
+        const truncated = truncateHeadTail(output, {
+          maxChars: MAX_OUTPUT_CHARS,
+          headChars: HEAD_CHARS,
+          tailChars: TAIL_CHARS,
+        }).text;
         if (timedOut) {
           finish({
             content: `${truncated}\n[command timed out after ${timeoutMs}ms]`,
@@ -106,12 +111,3 @@ export const bashTool: ToolSpec<Input> = {
     });
   },
 };
-
-function truncateOutput(output: string): string {
-  if (output.length <= MAX_OUTPUT_CHARS) return output;
-  const omitted = output.length - HEAD_CHARS - TAIL_CHARS;
-  return (
-    `${output.slice(0, HEAD_CHARS)}\n... ${omitted} characters omitted ...\n` +
-    output.slice(-TAIL_CHARS)
-  );
-}
