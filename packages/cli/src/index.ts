@@ -28,6 +28,7 @@ import {
   exitPlanModeTool,
   findProjectRoot,
   isSandboxExecAvailable,
+  loadProjectMemory,
   loadSession,
   loadSettings,
   mergeHooks,
@@ -245,6 +246,14 @@ program
       const registry = new ProviderRegistry({ settings });
       const resolved = registry.resolve(ref);
 
+      // AGENTS.md / CLAUDE.md from the project root down to cwd (+ ~/.agent).
+      // Loaded once — it does not change across turns.
+      const memory = await loadProjectMemory(cwd);
+      if (memory.sources.length > 0) {
+        const rel = memory.sources.map((s) => resolvePath(s).replace(`${cwd}/`, ''));
+        process.stderr.write(`\x1b[2mproject memory: ${rel.join(', ')}\x1b[0m\n`);
+      }
+
       const agentDir = join(await findProjectRoot(cwd), AGENT_DIR);
       const recorder = new SessionRecorder(agentDir, opts.resume);
       const priorMessages = opts.resume ? await loadSession(agentDir, opts.resume) : [];
@@ -421,7 +430,11 @@ program
           model: resolved,
           tools: new ToolRegistry(specs),
           cwd,
-          system: buildAgentSystemPrompt({ cwd, mode: activeMode }),
+          system: buildAgentSystemPrompt({
+            cwd,
+            mode: activeMode,
+            ...(memory.text ? { projectMemory: memory.text } : {}),
+          }),
           recorder,
           session,
           hooks,

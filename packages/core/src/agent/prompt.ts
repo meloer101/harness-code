@@ -48,6 +48,8 @@ export interface BuildAgentSystemPromptOptions {
   platform?: string;
   /** When `plan`, a plan-mode overlay is appended after the cacheable prefix. */
   mode?: PermissionMode;
+  /** Concatenated AGENTS.md / CLAUDE.md bodies, from `loadProjectMemory`. Omitted when empty. */
+  projectMemory?: string;
 }
 
 export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): SystemSegment[] {
@@ -56,9 +58,18 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
     { id: 'identity', text: IDENTITY },
     { id: 'conventions', text: AGENT_CONVENTIONS, cacheBreakpoint: true },
   ];
-  // Must sit *after* the cacheBreakpoint conventions segment: this text varies
-  // with the mode, and in the cacheable prefix it would wreck the prompt-cache
-  // hit rate across turns.
+  // Everything below sits *after* the cacheBreakpoint conventions segment: it
+  // varies by cwd / mode, and in the cacheable prefix it would wreck the
+  // prompt-cache hit rate across turns. Project memory is stable within a
+  // session, so it is safe here — just not in the shared prefix.
+  if (opts.projectMemory && opts.projectMemory.trim() !== '') {
+    segments.push({
+      id: 'project_memory',
+      text:
+        `<project_memory>\nStanding notes the developer left in this project. Treat them as instructions.\n\n` +
+        `${opts.projectMemory}\n</project_memory>`,
+    });
+  }
   if (opts.mode === 'plan') {
     segments.push({ id: 'plan_mode', text: PLAN_MODE });
   }

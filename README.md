@@ -148,7 +148,7 @@ evals             benchmark tasks and fixtures
 | 1 | Provider compatibility layer | done |
 | 2 | Agent loop and tools | done |
 | 3 | Permissions and sandbox | done |
-| 4 | Context engineering — compaction, read ledger, cache stability | compaction done; ledger + project memory next |
+| 4 | Context engineering — compaction, project memory, cache stability | compaction + project memory + edit-staleness done; output truncation + cache telemetry next |
 | 5 | MCP client and server | |
 | 6 | Skills and plan mode | |
 | 7 | Sub-agents and parallelism | |
@@ -165,6 +165,10 @@ Settings layer as built-in defaults → `~/.agent/settings.json` →
 `.agent/settings.json`, so a project can pin a model or point at an internal
 proxy without touching globals. See
 [`.agent/settings.example.json`](.agent/settings.example.json).
+
+`AGENTS.md` / `CLAUDE.md` files — from the project root down to the working
+directory, plus `~/.agent/` — are loaded into the system prompt as standing
+project instructions.
 
 Credentials come from the environment (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
 ...), or `HC_<PROVIDER>_API_KEY` for anything custom. Base URLs can be

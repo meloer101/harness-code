@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +43,18 @@ describe('writeTool', () => {
     const result = await writeTool.execute({ path: 'existing.txt', content: 'updated' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(await readFile(join(cwd, 'existing.txt'), 'utf8')).toBe('updated');
+  });
+
+  it('rejects overwriting a file that changed on disk since it was read', async () => {
+    await writeFile(join(cwd, 'existing.txt'), 'original', 'utf8');
+    await readTool.execute({ path: 'existing.txt' }, ctx);
+    await utimes(join(cwd, 'existing.txt'), new Date(), new Date(Date.now() + 60_000));
+
+    const result = await writeTool.execute({ path: 'existing.txt', content: 'updated' }, ctx);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/read it again/i);
+    expect(await readFile(join(cwd, 'existing.txt'), 'utf8')).toBe('original');
   });
 
   it('refuses to write outside the workspace', async () => {

@@ -38,10 +38,21 @@ export const editTool: ToolSpec<z.infer<typeof schema>> = {
     }
 
     let text: string;
+    let currentMtimeMs: number;
     try {
-      text = await readFile(path, 'utf8');
+      const [content, stats] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
+      text = content;
+      currentMtimeMs = stats.mtimeMs;
     } catch (err) {
       return { content: `Could not read ${input.path}: ${errorMessage(err)}`, isError: true };
+    }
+
+    const readMtimeMs = ctx.session.readMtime(path);
+    if (readMtimeMs !== undefined && currentMtimeMs !== readMtimeMs) {
+      return {
+        content: `${input.path} changed on disk since you read it — read it again before editing.`,
+        isError: true,
+      };
     }
 
     const occurrences = countOccurrences(text, input.oldString);

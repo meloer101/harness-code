@@ -28,12 +28,20 @@ export const writeTool: ToolSpec<z.infer<typeof schema>> = {
       const message = err instanceof PathEscapeError ? err.message : errorMessage(err);
       return { content: message, isError: true };
     }
-    const existed = await stat(path)
-      .then(() => true)
-      .catch(() => false);
-    if (existed && !ctx.session.hasRead(path)) {
+    const existingMtimeMs = await stat(path)
+      .then((s) => s.mtimeMs)
+      .catch(() => undefined);
+    if (existingMtimeMs !== undefined && !ctx.session.hasRead(path)) {
       return {
         content: `Refusing to overwrite ${input.path}: read it first so you know what you are replacing.`,
+        isError: true,
+      };
+    }
+
+    const readMtimeMs = ctx.session.readMtime(path);
+    if (existingMtimeMs !== undefined && readMtimeMs !== undefined && existingMtimeMs !== readMtimeMs) {
+      return {
+        content: `${input.path} changed on disk since you read it — read it again before overwriting.`,
         isError: true,
       };
     }

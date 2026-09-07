@@ -15,6 +15,15 @@ describe('SessionState', () => {
     expect(session.hasRead('/a.txt')).toBe(true);
   });
 
+  it('exposes the recorded mtime, or undefined when never read', () => {
+    const session = new SessionState();
+    expect(session.readMtime('/a.txt')).toBeUndefined();
+    session.markRead('/a.txt', 456);
+    expect(session.readMtime('/a.txt')).toBe(456);
+    session.markRead('/a.txt', 789);
+    expect(session.readMtime('/a.txt')).toBe(789);
+  });
+
   it('stores the todo list', () => {
     const session = new SessionState();
     expect(session.getTodos()).toEqual([]);

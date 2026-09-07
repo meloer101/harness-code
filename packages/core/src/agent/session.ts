@@ -45,6 +45,11 @@ export class SessionState {
     return this.readFiles.has(path);
   }
 
+  /** The mtime `path` had when it was last read/written this session, or undefined. */
+  readMtime(path: string): number | undefined {
+    return this.readFiles.get(path);
+  }
+
   setTodos(todos: TodoItem[]): void {
     this.todos = todos;
   }

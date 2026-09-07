@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -61,6 +61,31 @@ describe('editTool', () => {
     );
     expect(replaced.isError).toBeUndefined();
     expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('baz baz');
+  });
+
+  it('rejects an edit when the file changed on disk since it was read', async () => {
+    await writeFile(join(cwd, 'a.txt'), 'foo bar', 'utf8');
+    await readTool.execute({ path: 'a.txt' }, ctx);
+    // Simulate an external modification: same content, newer mtime.
+    await utimes(join(cwd, 'a.txt'), new Date(), new Date(Date.now() + 60_000));
+
+    const result = await editTool.execute(
+      { path: 'a.txt', oldString: 'foo', newString: 'baz' },
+      ctx,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/read it again/i);
+    expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('foo bar');
+  });
+
+  it('allows a second consecutive edit without a re-read', async () => {
+    await writeFile(join(cwd, 'a.txt'), 'foo bar baz', 'utf8');
+    await readTool.execute({ path: 'a.txt' }, ctx);
+    await editTool.execute({ path: 'a.txt', oldString: 'foo', newString: 'FOO' }, ctx);
+    const second = await editTool.execute({ path: 'a.txt', oldString: 'baz', newString: 'BAZ' }, ctx);
+    expect(second.isError).toBeUndefined();
+    expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('FOO bar BAZ');
   });
 
   it('reports an error when oldString is not found', async () => {

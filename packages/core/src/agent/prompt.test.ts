@@ -51,4 +51,28 @@ describe('buildAgentSystemPrompt', () => {
       expect(withMode[1]).toEqual(base[1]);
     }
   });
+
+  it('inserts a project_memory segment after conventions and before environment', () => {
+    const segments = buildAgentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      projectMemory: '## /w/AGENTS.md\n\nuse 2-space indent',
+    });
+    expect(segments.map((s) => s.id)).toEqual(['identity', 'conventions', 'project_memory', 'environment']);
+    const memory = segments.find((s) => s.id === 'project_memory');
+    expect(memory?.text).toContain('use 2-space indent');
+    expect(memory?.cacheBreakpoint).toBeFalsy();
+  });
+
+  it('omits project_memory when the text is empty, keeping the segment order', () => {
+    const segments = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', projectMemory: '   ' });
+    expect(segments.map((s) => s.id)).toEqual(['identity', 'conventions', 'environment']);
+  });
+
+  it('keeps identity + conventions byte-identical when project memory is present', () => {
+    const base = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    const withMem = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', projectMemory: 'notes' });
+    expect(withMem[0]).toEqual(base[0]);
+    expect(withMem[1]).toEqual(base[1]);
+  });
 });
