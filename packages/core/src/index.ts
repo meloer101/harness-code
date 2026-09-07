@@ -13,5 +13,6 @@ export * from './context/budget.js';
 export * from './config/settings.js';
 export * from './permissions/index.js';
 export * from './tools/index.js';
+export * from './skills/index.js';
 export * from './agent/index.js';
 export * from './mcp/index.js';

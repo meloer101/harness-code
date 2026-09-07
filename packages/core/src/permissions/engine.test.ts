@@ -243,6 +243,44 @@ describe('PermissionEngine', () => {
       ).toBe('allow');
     });
   });
+
+  describe('skill tool', () => {
+    it('is allowed by default in plan and readOnly (it is read-only)', async () => {
+      for (const mode of ['plan', 'acceptEdits', 'readOnly', 'yolo'] as const) {
+        expect(
+          (await engine({ mode }).evaluate({ toolName: 'skill', input: { name: 'x' }, readOnly: true }))
+            .decision,
+        ).toBe('allow');
+      }
+    });
+
+    it('is allowed in ask mode via the default Skill allow rule', async () => {
+      const v = await engine({ mode: 'ask', allow: ['Skill'] }).evaluate({
+        toolName: 'skill',
+        input: { name: 'x' },
+        readOnly: true,
+      });
+      expect(v.decision).toBe('allow');
+    });
+
+    it('honours an explicit deny rule', async () => {
+      const v = await engine({ mode: 'ask', deny: ['Skill'] }).evaluate({
+        toolName: 'skill',
+        input: { name: 'x' },
+        readOnly: true,
+      });
+      expect(v.decision).toBe('deny');
+    });
+
+    it('can be gated behind an ask rule', async () => {
+      const v = await engine({ mode: 'yolo', ask: ['Skill'] }).evaluate({
+        toolName: 'skill',
+        input: { name: 'x' },
+        readOnly: true,
+      });
+      expect(v.decision).toBe('ask');
+    });
+  });
 });
 
 describe('mergeSettings permissions', () => {

@@ -65,6 +65,28 @@ describe('buildAgentSystemPrompt', () => {
     expect(memory?.cacheBreakpoint).toBeFalsy();
   });
 
+  it('inserts available_skills after conventions and before project_memory', () => {
+    const segments = buildAgentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      skillsManifest: '<available_skills>\n- code-review: reviews code\n</available_skills>',
+      projectMemory: '## /w/AGENTS.md\n\nnotes',
+    });
+    expect(segments.map((s) => s.id)).toEqual([
+      'identity',
+      'conventions',
+      'available_skills',
+      'project_memory',
+      'environment',
+    ]);
+    expect(segments.find((s) => s.id === 'available_skills')?.text).toContain('code-review');
+  });
+
+  it('omits available_skills when the manifest is empty', () => {
+    const segments = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', skillsManifest: '  ' });
+    expect(segments.map((s) => s.id)).not.toContain('available_skills');
+  });
+
   it('omits project_memory when the text is empty, keeping the segment order', () => {
     const segments = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', projectMemory: '   ' });
     expect(segments.map((s) => s.id)).toEqual(['identity', 'conventions', 'environment']);

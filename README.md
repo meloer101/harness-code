@@ -4,11 +4,12 @@ A coding agent built from scratch — MCP client and server, skills, plan mode,
 and the harness engineering underneath: context management, a permission
 sandbox, sub-agents, and an eval suite that measures whether any of it works.
 
-> Status: **Phase 5 of 10**. The provider compatibility layer, agent loop,
+> Status: **Phase 6 of 10**. The provider compatibility layer, agent loop,
 > tool set, permission sandbox, plan mode, context engineering (compaction,
-> project memory, prompt-cache stability, per-category accounting), and MCP
+> project memory, prompt-cache stability, per-category accounting), MCP
 > (client for stdio / HTTP / SSE servers including the OAuth handshake, plus
-> `hc mcp serve` the other way) are complete and tested. Skills, sub-agents,
+> `hc mcp serve` the other way), and skills (progressive disclosure, bundled
+> examples, `allowed-tools` narrowing) are complete and tested. Sub-agents,
 > telemetry and the TUI are still ahead — see [the plan](#roadmap).
 
 ## Why this exists
@@ -164,9 +165,42 @@ node packages/cli/dist/index.js mcp serve      # builtin tools over MCP/stdio
 node packages/cli/dist/index.js mcp list        # configured servers and their tools
 ```
 
+## Skills
+
+A skill is a folder with a `SKILL.md` — YAML frontmatter (`name`, `description`,
+optional `allowed-tools` / `license` / `metadata`) and a Markdown body — plus
+optional `scripts/` and `references/` alongside it. The format is the
+[Agent Skills spec](https://agentskills.io/specification), so an ecosystem skill
+drops in unchanged.
+
+Discovery walks `<project>/.agent/skills/`, `~/.agent/skills/`, and the builtins
+that ship with `hc` (`code-review`, `writing-tests`), highest precedence first —
+a project can shadow a builtin by name. A malformed skill is skipped with one
+line, never fatal.
+
+```bash
+node packages/cli/dist/index.js skills          # what was discovered, and from where
+```
+
+**Progressive disclosure**, three tiers:
+
+1. **Startup** — only `name: description` per skill reaches the system prompt, in
+   an `<available_skills>` block. Two builtins cost ~170 tokens total; the block
+   is capped at `MAX_MANIFEST_TOKENS` and the overflow stays loadable by name.
+2. **Activation** — the model calls the `skill` tool with a name and gets that
+   skill's full `SKILL.md` body back as the tool result. Nothing else loads.
+3. **Reference** — files under `references/` are read by the model only if the
+   instructions send it there.
+
+The `skill` tool is read-only (allowed in every mode, `plan` included; a
+`Deny(Skill)` rule still blocks it). If an activated skill declares
+`allowed-tools`, the tool set offered on the next turn narrows to what it named —
+multiple active skills intersect — at the "what the model sees" layer; the
+permission engine's own rules are unchanged.
+
 ## Testing
 
-306 tests, no network, no credentials, no API spend:
+337 tests, no network, no credentials, no API spend:
 
 ```bash
 pnpm test
@@ -205,7 +239,7 @@ evals             benchmark tasks and fixtures
 | 3 | Permissions and sandbox | done |
 | 4 | Context engineering — compaction, project memory, truncation, cache stability | done |
 | 5 | MCP client and server | done |
-| 6 | Skills and plan mode | |
+| 6 | Skills and plan mode | done |
 | 7 | Sub-agents and parallelism | |
 | 8 | Telemetry and eval suite | |
 | 9 | CLI and TUI | |

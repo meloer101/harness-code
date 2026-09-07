@@ -18,13 +18,14 @@ import type { SystemSegment } from '../provider/types.js';
 
 /**
  * Canonical order for system segments, most stable first. `identity` and
- * `conventions` never change; `project_memory` is fixed per project;
- * `plan_mode` and `environment` vary by mode / cwd and go last so the cacheable
- * head stays put.
+ * `conventions` never change; `available_skills` and `project_memory` are fixed
+ * per project; `plan_mode` and `environment` vary by mode / cwd and go last so
+ * the cacheable head stays put.
  */
 export const SYSTEM_SEGMENT_ORDER = [
   'identity',
   'conventions',
+  'available_skills',
   'project_memory',
   'plan_mode',
   'environment',

@@ -27,6 +27,8 @@ import {
   createCompactor,
   createPermissionEngine,
   createPermissionHooks,
+  createSkillTool,
+  discoverSkills,
   exitPlanModeTool,
   findProjectRoot,
   isSandboxExecAvailable,
@@ -38,12 +40,15 @@ import {
   loginToServer,
   McpHub,
   mergeHooks,
+  narrowToolSpecs,
   nonInteractiveAskHandler,
+  SkillCatalog,
   rebuildSessionState,
   resolveResources,
   serveOverStdio,
 } from '@harness-code/core';
 import type {
+  ActiveSkill,
   AgentControl,
   AgentEvent,
   AskHandler,
@@ -229,6 +234,7 @@ program
   .option('--ask <rule>', 'add an ask rule (repeatable)', collect, [])
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
   .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
+  .option('--no-skills', 'do not discover or offer skills')
   .action(
     async (
       prompt: string | undefined,
@@ -244,6 +250,7 @@ program
         ask: string[];
         deny: string[];
         compact: boolean;
+        skills: boolean;
       },
     ) => {
       const cwd = resolvePath(opts.cwd);
@@ -262,6 +269,26 @@ program
       if (memory.sources.length > 0) {
         const rel = memory.sources.map((s) => resolvePath(s).replace(`${cwd}/`, ''));
         process.stderr.write(`\x1b[2mproject memory: ${rel.join(', ')}\x1b[0m\n`);
+      }
+
+      // Skills from .agent/skills (project + ~/.agent) plus the builtins. Only
+      // name+description reach the system prompt now; the `skill` tool loads a
+      // body on demand.
+      const { skills: discoveredSkills, counts: skillCounts } = opts.skills
+        ? await discoverSkills(cwd, {
+            onSkip: (reason) => process.stderr.write(`\x1b[2mskipped ${reason}\x1b[0m\n`),
+          })
+        : { skills: [], counts: { project: 0, user: 0, builtin: 0 } };
+      const skillCatalog = new SkillCatalog(discoveredSkills);
+      if (skillCatalog.size > 0) {
+        process.stderr.write(
+          `\x1b[2mskills: ${skillCatalog.size} discovered ` +
+            `(project ${skillCounts.project}, user ${skillCounts.user}, builtin ${skillCounts.builtin})` +
+            (skillCatalog.dropped.length > 0
+              ? ` — ${skillCatalog.dropped.length} not advertised (manifest budget)`
+              : '') +
+            `\x1b[0m\n`,
+        );
       }
 
       // MCP servers from .mcp.json (project + ~/.agent). Connections are lazy —
@@ -338,11 +365,26 @@ program
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
 
       const planApprovedMode: PermissionMode = permissions.planApprovedMode ?? 'acceptEdits';
-      // Channel from exit_plan_mode back here. `mode` is read live off the engine
-      // so the tool always sees the current mode, not a snapshot.
+      // Skills the model has loaded this session. `buildLoop` reads this to
+      // narrow the tool set when a loaded skill declared `allowed-tools`.
+      const activeSkills: ActiveSkill[] = [];
+      // Channel from exit_plan_mode / the skill tool back here. `mode` is read
+      // live off the engine so the tool always sees the current mode.
       const control: AgentControl = {
         get mode(): PermissionMode {
           return engine.getMode();
+        },
+        get activeSkills(): readonly ActiveSkill[] {
+          return activeSkills;
+        },
+        activateSkill(skill: ActiveSkill): void {
+          if (activeSkills.some((s) => s.name === skill.name)) return;
+          activeSkills.push(skill);
+          process.stderr.write(
+            `\x1b[2mskill loaded: ${skill.name}` +
+              (skill.allowedTools ? ` — tools now limited to: ${skill.allowedTools.join(' ')}` : '') +
+              `\x1b[0m\n`,
+          );
         },
         exitPlanMode(): PermissionMode {
           engine.setMode(planApprovedMode);
@@ -472,16 +514,20 @@ program
         const specs = [
           ...builtinTools(),
           ...(activeMode === 'plan' ? [exitPlanModeTool] : []),
+          ...(skillCatalog.size > 0 ? [createSkillTool(skillCatalog)] : []),
           ...mcpToolSpecs,
         ];
+        // A loaded skill's `allowed-tools` narrows what the model sees next turn.
+        const narrowed = narrowToolSpecs(specs, activeSkills);
         return new AgentLoop({
           model: resolved,
-          tools: new ToolRegistry(specs),
+          tools: new ToolRegistry(narrowed),
           cwd,
           system: buildAgentSystemPrompt({
             cwd,
             mode: activeMode,
             ...(memory.text ? { projectMemory: memory.text } : {}),
+            ...(skillCatalog.manifest() ? { skillsManifest: skillCatalog.manifest() } : {}),
           }),
           recorder,
           session,
@@ -716,6 +762,31 @@ mcp
   });
 
 program
+  .command('skills')
+  .description('List discovered skills (project, user, and builtin)')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/skills against', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    const cwd = resolvePath(opts.cwd);
+    const { skills, counts } = await discoverSkills(cwd, {
+      onSkip: (reason) => console.log(`· skipped ${reason}`),
+    });
+    if (skills.length === 0) {
+      console.log('no skills found');
+      return;
+    }
+    console.log(
+      `${skills.length} skill${skills.length === 1 ? '' : 's'} ` +
+        `(project ${counts.project}, user ${counts.user}, builtin ${counts.builtin})\n`,
+    );
+    for (const s of skills) {
+      console.log(`${s.name}  [${s.source}]`);
+      console.log(`  ${s.description}`);
+      if (s.allowedTools) console.log(`  allowed-tools: ${s.allowedTools.join(' ')}`);
+      console.log(`  ${s.dir}`);
+    }
+  });
+
+program
   .command('doctor')
   .description('Show what the harness thinks its configuration is')
   .action(async () => {
@@ -734,6 +805,7 @@ interface ContextSnapshot {
 function fmtBreakdown(b: ContextBreakdown): string {
   return (
     `sys ${fmtTokens(b.system)}` +
+    (b.skills > 0 ? ` · skl ${fmtTokens(b.skills)}` : '') +
     (b.projectMemory > 0 ? ` · mem ${fmtTokens(b.projectMemory)}` : '') +
     ` · tools ${fmtTokens(b.toolSchemas)} · hist ${fmtTokens(b.history)}`
   );

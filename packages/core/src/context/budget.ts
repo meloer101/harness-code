@@ -17,6 +17,7 @@ import { heuristicTokenCount, type TokenCounter } from './tokenizer.js';
 
 export interface ContextBreakdown {
   system: number;
+  skills: number;
   projectMemory: number;
   toolSchemas: number;
   history: number;
@@ -25,9 +26,12 @@ export interface ContextBreakdown {
 
 /** The id of the system segment that carries AGENTS.md / CLAUDE.md content. */
 export const PROJECT_MEMORY_SEGMENT_ID = 'project_memory';
+/** The id of the system segment that carries the `<available_skills>` manifest. */
+export const SKILLS_SEGMENT_ID = 'available_skills';
 
 export interface StableParts {
   system: number;
+  skills: number;
   projectMemory: number;
   toolSchemas: number;
 }
@@ -43,20 +47,25 @@ export function analyzeStableParts(
   count: TokenCounter = heuristicTokenCount,
 ): StableParts {
   let system = 0;
+  let skills = 0;
   let projectMemory = 0;
   for (const seg of req.system ?? []) {
     const n = count(seg.text);
     if (seg.id === PROJECT_MEMORY_SEGMENT_ID) projectMemory += n;
+    else if (seg.id === SKILLS_SEGMENT_ID) skills += n;
     else system += n;
   }
   const toolSchemas = count(
     (req.tools ?? []).map((t) => t.description + JSON.stringify(t.inputSchema)).join(''),
   );
-  return { system, projectMemory, toolSchemas };
+  return { system, skills, projectMemory, toolSchemas };
 }
 
 /** Combine the fixed buckets with the running total to get the full breakdown. */
 export function breakdownFrom(stable: StableParts, totalTokens: number): ContextBreakdown {
-  const history = Math.max(0, totalTokens - stable.system - stable.projectMemory - stable.toolSchemas);
+  const history = Math.max(
+    0,
+    totalTokens - stable.system - stable.skills - stable.projectMemory - stable.toolSchemas,
+  );
   return { ...stable, history, total: totalTokens };
 }

@@ -51,6 +51,8 @@ export interface BuildAgentSystemPromptOptions {
   mode?: PermissionMode;
   /** Concatenated AGENTS.md / CLAUDE.md bodies, from `loadProjectMemory`. Omitted when empty. */
   projectMemory?: string;
+  /** The `<available_skills>` manifest, from `SkillCatalog.manifest()`. Omitted when empty. */
+  skillsManifest?: string;
 }
 
 export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): SystemSegment[] {
@@ -61,8 +63,12 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
   ];
   // Everything below sits *after* the cacheBreakpoint conventions segment: it
   // varies by cwd / mode, and in the cacheable prefix it would wreck the
-  // prompt-cache hit rate across turns. Project memory is stable within a
-  // session, so it is safe here — just not in the shared prefix.
+  // prompt-cache hit rate across turns. The skills manifest and project memory
+  // are stable within a session, so they are safe here — just not in the shared
+  // prefix.
+  if (opts.skillsManifest && opts.skillsManifest.trim() !== '') {
+    segments.push({ id: 'available_skills', text: opts.skillsManifest });
+  }
   if (opts.projectMemory && opts.projectMemory.trim() !== '') {
     segments.push({
       id: 'project_memory',

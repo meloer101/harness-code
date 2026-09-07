@@ -76,6 +76,10 @@ export class PermissionEngine {
       return this.evaluateTodo();
     }
 
+    if (tool === 'skill') {
+      return this.evaluateSkill();
+    }
+
     if (tool === 'exit_plan_mode') {
       return this.evaluateExitPlanMode();
     }
@@ -101,6 +105,21 @@ export class PermissionEngine {
     const asked = this.askRules.find((r) => ruleMatchesMcp(r, tool));
     if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
     return this.modeDefault(tool, false);
+  }
+
+  /**
+   * `skill` only pulls bundled instructions into context — no workspace effect —
+   * so it is allowed in every mode, `plan` and `readOnly` included. An explicit
+   * `deny`/`allow`/`ask` rule still applies.
+   */
+  private evaluateSkill(): PermissionVerdict {
+    const denied = this.deny.find((r) => r.tool === 'skill');
+    if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
+    const allowed = this.allow.find((r) => r.tool === 'skill');
+    if (allowed) return { decision: 'allow' };
+    const asked = this.askRules.find((r) => r.tool === 'skill');
+    if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
+    return this.modeDefault('skill', true);
   }
 
   private evaluateTodo(): PermissionVerdict {

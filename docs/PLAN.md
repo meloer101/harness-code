@@ -28,6 +28,9 @@
 > | 2026-09-07 | Phase 5b：把上一行延后的 OAuth + SSE transport 补齐（用户要求，接 Linear/Gmail 这类托管 server） | `mcp/oauth.ts`（`FileOAuthStore` → `~/.agent/mcp-auth/<slug>/`、`createOAuthProvider` 实现 SDK `OAuthClientProvider`、`openBrowser`）+ `mcp/oauth-login.ts`（`loginToServer`：本地回调 `http.Server` + `finishAuth` + 验证）。`hc mcp login/logout`。`client.ts` 加 SSE transport + http→sse 降级 + consume-mode provider（静默 refresh，不弹浏览器）。授权时机：交互式只 stderr 提示跑 `hc mcp login`（不中途弹浏览器）；OAuth 分支自动进入（无 `Authorization` header 即挂 authProvider）。测试：进程内 mock「OAuth AS + MCP server」跑通 discovery/DCR/token/authed-MCP 全链路，无网络。306 tests（+8）| Phase 9 才做的前提是"没有交互场景"，但 REPL 已经落地、`hc mcp login` 本身就是个独立交互命令，不依赖 TUI；SDK 自带 `OAuthClientProvider` + 两个 transport 的 `authProvider`，我们只写 provider 实现 + 回调 server |
 > | 2026-09-07 | Phase 5：MCP 工具复用现有 `ToolSpec`（zod schema） | `ToolSpec` 加可选 `rawInputSchema?: JSONSchema`：MCP tool 的契约是 server 自己的 raw JSON Schema，`schema` 字段只留一个 `z.record` 透传守卫，真正校验交给 server。`toolDefinition()` 优先用 `rawInputSchema` | zod schema 只是 harness 内部把 "校验" 和 "发给模型的 JSON Schema" 统一到一处的手段；MCP 的 schema 天然就是 JSON Schema，硬转成 zod 再转回去既丢信息又没意义 |
 > | 2026-09-07 | Phase 5：MCP 工具声明 `readOnly` / `concurrencySafe` | 一律写死 `false`（串行 + 按 "非只读" 过权限引擎，和 `bash` 同档）| 无法自省任意 MCP 工具是否有副作用；保守串行 + 默认 `ask` 是唯一安全的默认。将来可让 `.mcp.json` 逐工具覆盖，但现在没有消费者 |
+> | 2026-09-08 | Phase 6：Skills + Plan Mode | Plan Mode 已在 Phase 3.5（c2ae764）做完，本 Phase 只做 **Skills**。`packages/core/src/skills/`：`validate.ts`（spec frontmatter 校验）、`discover.ts`（project `.agent/skills` > user `~/.agent/skills` > builtin `packages/core/skills`，同名高优先级 shadow，非法跳过不 fatal）、`catalog.ts`（`SkillCatalog` + `<available_skills>` manifest + `MAX_MANIFEST_TOKENS=1500` 上界）、`skill-tool.ts`（`skill` 工具，只读，返回 SKILL.md 正文 = 渐进式披露第二层）、`narrow.ts`（`allowed-tools` 收窄）。system 段新增 `available_skills`（排在 `conventions` 后、`project_memory` 前）。权限引擎加 `evaluateSkill`（只读，plan/readOnly 放行，`Deny(Skill)` 仍生效）。CLI 加 `hc skills` + `--no-skills` + `control.activateSkill`。内置 `code-review`（带 `references/checklist.md` 演示第三层）+ `writing-tests`（带 `allowed-tools` 演示收窄）。+31 tests（337 total）。 |
+> | 2026-09-08 | Phase 6：`allowed-tools` 与权限引擎按 specifier 逐调用取交集 | 只做 **注册表层收窄**：`narrowToolSpecs` 按工具名过滤「给模型看到的工具集」，多个激活 skill 取交集，`skill`/`todo` 恒保留；激活状态持续到会话结束。不在权限引擎里按 specifier 判定（如 `Bash(git:*)` 只放行 git 段）—— 引擎自身的 allow/deny 规则仍是那件事的归属地。字段本身在 spec 里也标 experimental，够用即可。 |
+> | 2026-09-08 | Phase 6：上下文降级做「多桶优先级配额器」 | 只做 **manifest token 上界**（`MAX_MANIFEST_TOKENS`，超限的 skill 不进 manifest 但仍可按名加载）+ 断言。渐进式披露落地后，skills 清单是唯一新增的「既可变又可舍」的桶，且天然很小（2 skill ≈ 172 token）；真正的多桶配额器没有更多消费者，不做。 |
 > | 2026-09-07 | Phase 5：MCP 权限默认档 | 与 Claude Code 对齐：`mcp__server__tool`（精确）/ `mcp__server`（整个 server）/ `mcp`（所有 MCP）三种粒度的 allow/ask/deny 规则，无规则时按 `modeDefault(tool, readOnly=false)` —— `ask`/`acceptEdits` 弹问、`plan`/`readOnly` 拒、`yolo` 放行、`deny` 永远赢。engine 里 `mcp__` 前缀在 `KNOWN_TOOLS` 检查前分流到 `evaluateMcp` | MCP 工具是运行时发现的，进不了静态 `KNOWN_TOOLS`；但没有理由让它绕开规则引擎 —— 复用同一套 allow/ask/deny 列表和同一条 `onBeforeToolCall` hook |
 
 ---
@@ -185,7 +188,12 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 
 ---
 
-### Phase 6 — Skills + Plan Mode（2 天）
+### Phase 6 — Skills + Plan Mode（2 天）✅ 已完成（2026-09-08）
+
+> Plan Mode 在 Phase 3.5 已完成，本 Phase 只做 Skills。落地见上方偏差记录表 2026-09-08 三行。
+> `packages/core/src/skills/{validate,discover,catalog,skill-tool,narrow}.ts` + 内置
+> `packages/core/skills/{code-review,writing-tests}/`。system 段加 `available_skills`，
+> 权限引擎加 `evaluateSkill`，CLI 加 `hc skills` / `--no-skills` / `control.activateSkill`。
 
 **Skills** (`skills/`)：
 - `SKILL.md` + YAML frontmatter（`name / description / allowed-tools / model`），可带同目录的脚本与资源文件。
@@ -204,6 +212,7 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 ---
 
 ### Phase 7 — 子 Agent 与并行（2 天）
+
 
 `agent/subagent.ts`：
 - Agent 定义放 `.agent/agents/*.md`（frontmatter：`name / description / tools / model`），内置 `explore`（只读搜索）与 `plan`（架构设计）两个。

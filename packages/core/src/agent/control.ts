@@ -9,9 +9,22 @@
 
 import type { PermissionMode } from '../permissions/types.js';
 
+export interface ActiveSkill {
+  name: string;
+  /** Parsed `allowed-tools` rules, when the skill declared any. */
+  allowedTools?: string[];
+}
+
 export interface AgentControl {
   /** The permission mode in effect right now. */
   readonly mode: PermissionMode;
+  /**
+   * Skills the model has loaded this session, in load order. A skill that
+   * declared `allowed-tools` narrows the tool set offered on subsequent turns.
+   */
+  readonly activeSkills?: readonly ActiveSkill[];
+  /** Record that the model loaded a skill (called by the `skill` tool). */
+  activateSkill?(skill: ActiveSkill): void;
   /**
    * Approve leaving plan mode. Returns the mode now in effect (chosen by the
    * CLI, not the tool). Safe to call when already out of plan mode.
