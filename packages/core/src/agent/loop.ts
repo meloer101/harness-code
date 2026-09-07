@@ -51,6 +51,7 @@ export type AgentEvent =
   | { type: 'tool_call_end'; id: string; name: string; result: ToolResult }
   | { type: 'turn_end'; usage: Usage }
   | { type: 'context'; usedTokens: number; windowTokens: number; ratio: number }
+  | { type: 'compaction'; tokensBefore: number; tokensAfter: number; keptTurns: number }
   | { type: 'stop'; reason: AgentStopReason };
 
 export interface AgentRunResult {
@@ -76,6 +77,12 @@ export interface AgentLoopOptions {
   temperature?: number;
   /** Fraction of the usable context window at which `onContextPressure` fires. */
   contextWarnRatio?: number;
+  /**
+   * Fraction of the usable context window at which `onCompact` is invoked —
+   * above the warn ratio, and tried before the hard stop. Pass `Infinity` (what
+   * `--no-compact` does) to disable compaction entirely.
+   */
+  contextCompactRatio?: number;
   /** Fraction of the usable context window at which the loop stops with `context_limit`. */
   contextStopRatio?: number;
   /** Cap on concurrently running read-only tool calls within one turn. */
@@ -89,6 +96,7 @@ export interface AgentLoopOptions {
 const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_CONTEXT_WARN_RATIO = 0.8;
+const DEFAULT_CONTEXT_COMPACT_RATIO = 0.92;
 const DEFAULT_CONTEXT_STOP_RATIO = 0.95;
 
 interface Decision {
@@ -103,6 +111,7 @@ export class AgentLoop {
   private readonly concurrency: number;
   private readonly maxOutputTokens: number;
   private readonly contextWarnRatio: number;
+  private readonly contextCompactRatio: number;
   private readonly contextStopRatio: number;
 
   constructor(private readonly opts: AgentLoopOptions) {
@@ -112,6 +121,7 @@ export class AgentLoop {
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
     this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
     this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
+    this.contextCompactRatio = opts.contextCompactRatio ?? DEFAULT_CONTEXT_COMPACT_RATIO;
     this.contextStopRatio = opts.contextStopRatio ?? DEFAULT_CONTEXT_STOP_RATIO;
   }
 
@@ -158,19 +168,58 @@ export class AgentLoop {
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
 
-      const contextTokens =
-        prevUsage === undefined
-          ? estimateRequestTokens(request)
-          : prevUsage.inputTokens + prevUsage.outputTokens + appendedTokens;
-      const ratio = contextTokens / availableWindow;
-      this.emit({ type: 'context', usedTokens: contextTokens, windowTokens: availableWindow, ratio });
-
       if (
         this.opts.maxTokens !== undefined &&
         usage.inputTokens + usage.outputTokens > this.opts.maxTokens
       ) {
         return this.stop(messages, usage, 'max_tokens');
       }
+
+      let contextTokens =
+        prevUsage === undefined
+          ? estimateRequestTokens(request)
+          : prevUsage.inputTokens + prevUsage.outputTokens + appendedTokens;
+      let ratio = contextTokens / availableWindow;
+
+      // Compaction gets first refusal at a nearly-full window: if it swaps in a
+      // shorter history the stop below is re-evaluated against it, so a session
+      // continues instead of ending. A skipped or failed compaction falls
+      // through to `context_limit` unchanged.
+      if (ratio >= this.contextCompactRatio && this.hooks.onCompact) {
+        const compacted = await this.hooks.onCompact(
+          messages,
+          { usedTokens: contextTokens, windowTokens: availableWindow, ratio },
+          turnCtx,
+        );
+        if (compacted && compacted.messages.length > 0) {
+          const before = contextTokens;
+          messages.length = 0;
+          messages.push(...compacted.messages);
+          if (compacted.usage) {
+            usage = addUsage(usage, compacted.usage);
+            const pricing = this.opts.model.capabilities.pricing;
+            if (pricing) costUSD += estimateCostUSD(compacted.usage, pricing) ?? 0;
+          }
+          prevUsage = undefined;
+          appendedTokens = 0;
+          contextTokens = estimateRequestTokens({ ...request, messages });
+          ratio = contextTokens / availableWindow;
+          this.emit({
+            type: 'compaction',
+            tokensBefore: before,
+            tokensAfter: contextTokens,
+            keptTurns: compacted.keptTurns ?? 0,
+          });
+          await this.opts.recorder?.recordCompaction([...messages], {
+            tokensBefore: before,
+            tokensAfter: contextTokens,
+            keptTurns: compacted.keptTurns ?? 0,
+          });
+        }
+      }
+
+      this.emit({ type: 'context', usedTokens: contextTokens, windowTokens: availableWindow, ratio });
+
       if (ratio >= this.contextStopRatio) {
         return this.stop(messages, usage, 'context_limit');
       }

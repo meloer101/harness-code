@@ -50,6 +50,24 @@ describe('SessionRecorder / loadSession', () => {
     expect(messages[0]).toEqual(userText('hello'));
     expect(messages[1]?.role).toBe('assistant');
   });
+
+  it('resumes from the last compaction snapshot plus messages recorded after it', async () => {
+    const recorder = new SessionRecorder(agentDir, 'test-session');
+    await recorder.recordMessage(userText('original goal'));
+    await recorder.recordMessage({ role: 'assistant', content: [{ type: 'text', text: 'old turn 1' }] });
+    await recorder.recordMessage(userText('old turn 2'));
+
+    const snapshot = [userText('original goal\n---\ndigest'), { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'kept turn' }] }];
+    await recorder.recordCompaction(snapshot, { tokensBefore: 5000, tokensAfter: 900, keptTurns: 1 });
+
+    await recorder.recordMessage(userText('post-compaction message'));
+
+    const messages = await loadSession(agentDir, 'test-session');
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toEqual(snapshot[0]);
+    expect(messages[1]).toEqual(snapshot[1]);
+    expect(messages[2]).toEqual(userText('post-compaction message'));
+  });
 });
 
 describe('rebuildSessionState', () => {

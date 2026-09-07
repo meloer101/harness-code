@@ -12,6 +12,8 @@ export interface BudgetFlags {
   maxTurns?: number;
   maxCost?: number;
   maxTokens?: number;
+  /** `--no-compact`: disable automatic context compaction for this run. */
+  noCompact?: boolean;
 }
 
 export interface ResolvedBudgets {
@@ -20,6 +22,8 @@ export interface ResolvedBudgets {
   maxTokens?: number;
   maxOutputTokens?: number;
   temperature?: number;
+  contextCompactRatio?: number;
+  compactKeepTurns?: number;
 }
 
 /**
@@ -33,5 +37,8 @@ export function resolveBudgets(flags: BudgetFlags, settings: Settings): Resolved
     maxTokens: flags.maxTokens ?? settings.maxTokens,
     maxOutputTokens: settings.maxOutputTokens,
     temperature: settings.temperature,
+    // `--no-compact` wins by pushing the trigger past any reachable ratio.
+    contextCompactRatio: flags.noCompact ? Number.POSITIVE_INFINITY : settings.contextCompactRatio,
+    compactKeepTurns: settings.compactKeepTurns,
   };
 }

@@ -148,7 +148,7 @@ evals             benchmark tasks and fixtures
 | 1 | Provider compatibility layer | done |
 | 2 | Agent loop and tools | done |
 | 3 | Permissions and sandbox | done |
-| 4 | Context engineering — compaction, read ledger, cache stability | next |
+| 4 | Context engineering — compaction, read ledger, cache stability | compaction done; ledger + project memory next |
 | 5 | MCP client and server | |
 | 6 | Skills and plan mode | |
 | 7 | Sub-agents and parallelism | |

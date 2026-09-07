@@ -10,6 +10,7 @@
 import { Command } from 'commander';
 
 import {
+  AGENT_CONVENTIONS,
   AGENT_DIR,
   AgentLoop,
   BUILTIN_PROVIDERS,
@@ -21,6 +22,7 @@ import {
   VERSION,
   buildAgentSystemPrompt,
   builtinTools,
+  createCompactor,
   createPermissionEngine,
   createPermissionHooks,
   exitPlanModeTool,
@@ -28,6 +30,7 @@ import {
   isSandboxExecAvailable,
   loadSession,
   loadSettings,
+  mergeHooks,
   nonInteractiveAskHandler,
   rebuildSessionState,
 } from '@harness-code/core';
@@ -214,6 +217,7 @@ program
   .option('--allow <rule>', 'add an allow rule, e.g. "Bash(git status:*)" (repeatable)', collect, [])
   .option('--ask <rule>', 'add an ask rule (repeatable)', collect, [])
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
+  .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
   .action(
     async (
       prompt: string | undefined,
@@ -228,6 +232,7 @@ program
         allow: string[];
         ask: string[];
         deny: string[];
+        compact: boolean;
       },
     ) => {
       const cwd = resolvePath(opts.cwd);
@@ -280,7 +285,6 @@ program
           echo: (line) => process.stderr.write(`\x1b[2m${line}\x1b[0m\n`),
         })(req);
       const askHandler: AskHandler = process.stdin.isTTY ? interactiveAsk : nonInteractiveAskHandler;
-      const hooks = createPermissionHooks(engine, askHandler);
       process.stderr.write(`\x1b[2mpermission mode: ${mode}\x1b[0m\n`);
 
       const planApprovedMode: PermissionMode = permissions.planApprovedMode ?? 'acceptEdits';
@@ -311,10 +315,36 @@ program
         );
       }
 
-      const { maxTurns, maxCostUSD, maxTokens, maxOutputTokens, temperature } = resolveBudgets(
-        { maxTurns: opts.maxTurns, maxCost: opts.maxCost, maxTokens: opts.maxTokens },
-        settings,
-      );
+      const { maxTurns, maxCostUSD, maxTokens, maxOutputTokens, temperature, contextCompactRatio, compactKeepTurns } =
+        resolveBudgets(
+          {
+            maxTurns: opts.maxTurns,
+            maxCost: opts.maxCost,
+            maxTokens: opts.maxTokens,
+            noCompact: !opts.compact,
+          },
+          settings,
+        );
+
+      // Compaction: mechanism after Claude Code (threshold → summarize the oldest
+      // span → continue), digest content after Manus (task state *plus* the
+      // working-style memo). Summaries run on the main model unless settings pin
+      // a cheaper `smallModel`. Failures are swallowed to a stderr line — the
+      // loop's `context_limit` stop is still the backstop.
+      const summarizer = settings.smallModel ? registry.resolve(settings.smallModel) : resolved;
+      const compactHook =
+        opts.compact === false
+          ? undefined
+          : {
+              onCompact: createCompactor({
+                provider: summarizer.provider,
+                model: summarizer.model,
+                conventions: AGENT_CONVENTIONS,
+                ...(compactKeepTurns !== undefined ? { keepTurns: compactKeepTurns } : {}),
+                onSkip: (reason) => process.stderr.write(`\x1b[2m${reason}\x1b[0m\n`),
+              }),
+            };
+      const hooks = mergeHooks(createPermissionHooks(engine, askHandler), compactHook);
 
       let lastContext: { usedTokens: number; windowTokens: number; ratio: number } | undefined;
       let contextWarned = false;
@@ -337,11 +367,18 @@ program
               process.stderr.write(
                 `\x1b[33mcontext ${fmtTokens(event.usedTokens)}/${fmtTokens(event.windowTokens)} ` +
                   `(${Math.round(event.ratio * 100)}%) — approaching the window limit. ` +
-                  `Start a new session to reset context (in-session /compact lands in Phase 4).\x1b[0m\n`,
+                  `History is compacted automatically near ~92%${opts.compact === false ? ' (disabled by --no-compact)' : ''}.\x1b[0m\n`,
               );
             }
             break;
           }
+          case 'compaction':
+            closeThinking();
+            process.stderr.write(
+              `\x1b[2mcontext compacted: ${fmtTokens(event.tokensBefore)} → ${fmtTokens(event.tokensAfter)} tokens ` +
+                `(kept last ${event.keptTurns} turn${event.keptTurns === 1 ? '' : 's'})\x1b[0m\n`,
+            );
+            break;
           case 'thinking_delta':
             if (!thinkingOpen) {
               process.stderr.write('\x1b[2m[thinking] ');
@@ -391,6 +428,7 @@ program
           control,
           signal,
           ...(maxTurns !== undefined ? { maxTurns } : {}),
+          ...(contextCompactRatio !== undefined ? { contextCompactRatio } : {}),
           ...(maxCostUSD !== undefined ? { maxCostUSD } : {}),
           ...(maxTokens !== undefined ? { maxTokens } : {}),
           ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),

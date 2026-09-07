@@ -297,6 +297,93 @@ describe('AgentLoop', () => {
     expect(events[0]).toBeCloseTo(seen[0]!.ratio);
   });
 
+  it('invokes onCompact at the compact ratio and continues with the replacement history', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    const events: string[] = [];
+    let sawCompactionEvent: { tokensBefore: number; tokensAfter: number; keptTurns: number } | undefined;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider, { contextWindow: 1000, maxOutputTokens: 100 }),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      contextWarnRatio: 5,
+      contextCompactRatio: 0,
+      contextStopRatio: 5,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onCompact: () => ({
+          messages: [userText('compacted history')],
+          usage: { inputTokens: 5, outputTokens: 5, cachedInputTokens: 0 },
+          keptTurns: 2,
+        }),
+      },
+      onEvent: (e) => {
+        events.push(e.type);
+        if (e.type === 'compaction') sawCompactionEvent = e;
+      },
+    });
+
+    const result = await loop.run([userText('a much longer original prompt that we pretend overflowed')]);
+
+    expect(result.stopReason).toBe('end_turn');
+    expect(events).toContain('compaction');
+    expect(sawCompactionEvent?.keptTurns).toBe(2);
+    expect(result.messages[0]).toEqual(userText('compacted history'));
+    expect(result.usage.inputTokens).toBeGreaterThanOrEqual(5);
+  });
+
+  it('does not invoke onCompact below the compact ratio (only onContextPressure)', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    let compactCalls = 0;
+    let pressureCalls = 0;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider, { contextWindow: 1000, maxOutputTokens: 100 }),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      contextWarnRatio: 0,
+      contextCompactRatio: 5,
+      contextStopRatio: 5,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onContextPressure: () => {
+          pressureCalls++;
+        },
+        onCompact: () => {
+          compactCalls++;
+          return undefined;
+        },
+      },
+    });
+
+    await loop.run([userText('hello world')]);
+
+    expect(compactCalls).toBe(0);
+    expect(pressureCalls).toBe(1);
+  });
+
+  it('still stops with context_limit when compaction is disabled', async () => {
+    const provider = new ScriptedProvider([{ text: 'unreached' }]);
+    let compactCalls = 0;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider, { contextWindow: 100, maxOutputTokens: 10 }),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      contextCompactRatio: Number.POSITIVE_INFINITY,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onCompact: () => {
+          compactCalls++;
+          return undefined;
+        },
+      },
+    });
+
+    const result = await loop.run([userText('x'.repeat(8000))]);
+
+    expect(result.stopReason).toBe('context_limit');
+    expect(compactCalls).toBe(0);
+    expect(provider.callCount).toBe(0);
+  });
+
   it('passes maxOutputTokens and temperature through to the ModelRequest', async () => {
     const provider = new ScriptedProvider([{ text: 'done' }]);
     const tools = new ToolRegistry([]);

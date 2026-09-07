@@ -32,4 +32,15 @@ describe('resolveBudgets', () => {
     expect(b.maxOutputTokens).toBe(4096);
     expect(b.temperature).toBe(0.3);
   });
+
+  it('carries contextCompactRatio / compactKeepTurns through from settings', () => {
+    const b = resolveBudgets({}, { contextCompactRatio: 0.5, compactKeepTurns: 5 });
+    expect(b.contextCompactRatio).toBe(0.5);
+    expect(b.compactKeepTurns).toBe(5);
+  });
+
+  it('--no-compact pushes contextCompactRatio past any reachable ratio', () => {
+    const b = resolveBudgets({ noCompact: true }, { contextCompactRatio: 0.5 });
+    expect(b.contextCompactRatio).toBe(Number.POSITIVE_INFINITY);
+  });
 });

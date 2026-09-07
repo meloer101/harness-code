@@ -30,6 +30,10 @@ export interface Settings extends RouterSettings {
   /** Per-request output cap; also the space reserved out of the context window. */
   maxOutputTokens?: number;
   temperature?: number;
+  /** Usable-window fraction at which history is auto-compacted. Loop default 0.92. */
+  contextCompactRatio?: number;
+  /** Trailing turns kept verbatim through a compaction. Compactor default 3. */
+  compactKeepTurns?: number;
   permissions?: PermissionConfig;
 }
 

@@ -58,11 +58,19 @@ export class SessionState {
 // On-disk persistence
 // ---------------------------------------------------------------------------
 
+export interface CompactionMeta {
+  tokensBefore: number;
+  tokensAfter: number;
+  keptTurns: number;
+}
+
 export interface SessionEvent {
-  type: 'message' | 'tool_call';
+  type: 'message' | 'tool_call' | 'compaction';
   ts: number;
   message?: Message;
   toolCall?: { id: string; name: string; input: unknown; result: ToolResult };
+  /** The full post-compaction message list plus what it saved. Replayed by `loadSession`. */
+  compaction?: CompactionMeta & { messages: Message[] };
 }
 
 export const SESSIONS_DIR = 'sessions';
@@ -94,6 +102,19 @@ export class SessionRecorder {
     await this.append({ type: 'tool_call', ts: Date.now(), toolCall });
   }
 
+  /**
+   * Record that history was compacted. Stores the full post-compaction snapshot
+   * so `--resume` can pick up the compacted form directly rather than trying to
+   * re-derive it.
+   */
+  async recordCompaction(messages: Message[], meta: CompactionMeta): Promise<void> {
+    await this.append({
+      type: 'compaction',
+      ts: Date.now(),
+      compaction: { messages, ...meta },
+    });
+  }
+
   private async append(event: SessionEvent): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
     await appendFile(this.path, `${JSON.stringify(event)}\n`, 'utf8');
@@ -108,10 +129,30 @@ async function readSessionEvents(agentDir: string, id: string): Promise<SessionE
     .map((line) => JSON.parse(line) as SessionEvent);
 }
 
-/** Rebuilds the message history for `--resume` by replaying `message` events. */
+/**
+ * Rebuilds the message history for `--resume`. Replays `message` events, but if
+ * the session was ever compacted, starts from the last compaction snapshot and
+ * replays only the `message` events recorded after it — so a resumed session
+ * continues in the compacted form, not the full pre-compaction history.
+ */
 export async function loadSession(agentDir: string, id: string): Promise<Message[]> {
   const events = await readSessionEvents(agentDir, id);
-  return events.filter((e) => e.type === 'message' && e.message).map((e) => e.message as Message);
+
+  let lastCompaction = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.type === 'compaction') {
+      lastCompaction = i;
+      break;
+    }
+  }
+
+  const messagesFrom = (slice: SessionEvent[]): Message[] =>
+    slice.filter((e) => e.type === 'message' && e.message).map((e) => e.message as Message);
+
+  if (lastCompaction === -1) return messagesFrom(events);
+
+  const snapshot = events[lastCompaction]?.compaction?.messages ?? [];
+  return [...snapshot, ...messagesFrom(events.slice(lastCompaction + 1))];
 }
 
 const FILE_TOOLS = new Set(['read', 'write', 'edit']);

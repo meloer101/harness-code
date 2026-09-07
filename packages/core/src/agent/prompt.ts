@@ -15,7 +15,12 @@ import type { PermissionMode } from '../permissions/types.js';
 
 const IDENTITY = "You are a coding agent working directly in a developer's codebase through tool calls.";
 
-const CONVENTIONS = `<tool_usage>
+/**
+ * The behavioral blocks, exported so the compactor can pass them to the
+ * summarizer as the baseline working agreement — the digest's style memo then
+ * only has to record deviations from this, not restate it.
+ */
+export const AGENT_CONVENTIONS = `<tool_usage>
 Read a file with \`read\` before editing it with \`edit\` — editing a file this session hasn't read yet is rejected. Prefer \`glob\` and \`grep\` over shelling out to \`bash\` for finding files or searching text: they're faster and run safely in parallel with other reads. When you need several independent tool calls — reading multiple files, or unrelated read-only lookups — issue them together in the same turn rather than one per turn. Read the relevant file before describing what code does or why something failed; don't guess about code you haven't opened.
 </tool_usage>
 
@@ -49,7 +54,7 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
   const platform = opts.platform ?? process.platform;
   const segments: SystemSegment[] = [
     { id: 'identity', text: IDENTITY },
-    { id: 'conventions', text: CONVENTIONS, cacheBreakpoint: true },
+    { id: 'conventions', text: AGENT_CONVENTIONS, cacheBreakpoint: true },
   ];
   // Must sit *after* the cacheBreakpoint conventions segment: this text varies
   // with the mode, and in the cacheable prefix it would wreck the prompt-cache
