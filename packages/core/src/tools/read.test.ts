@@ -55,4 +55,12 @@ describe('readTool', () => {
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/escapes the workspace/);
   });
+
+  it('clamps a single very long line instead of dumping it whole', async () => {
+    await writeFile(join(cwd, 'min.js'), `${'x'.repeat(500_000)}\nshort line`, 'utf8');
+    const result = await readTool.execute({ path: 'min.js' }, ctx);
+    expect(result.content.length).toBeLessThan(10_000);
+    expect(result.content).toMatch(/\+\d+ chars on this line/);
+    expect(result.content).toContain('short line');
+  });
 });

@@ -13,6 +13,16 @@ const schema = z.object({
 });
 
 const DEFAULT_LIMIT = 2000;
+/**
+ * Per-line ceiling. A minified bundle or a JSONL log can be one line of many
+ * megabytes; without this, `read` would pull the whole thing into context.
+ */
+const MAX_LINE_CHARS = 2000;
+
+function clampLine(line: string): string {
+  if (line.length <= MAX_LINE_CHARS) return line;
+  return `${line.slice(0, MAX_LINE_CHARS)} … +${line.length - MAX_LINE_CHARS} chars on this line`;
+}
 
 export const readTool: ToolSpec<z.infer<typeof schema>> = {
   name: 'read',
@@ -46,7 +56,7 @@ export const readTool: ToolSpec<z.infer<typeof schema>> = {
     const limit = input.limit ?? DEFAULT_LIMIT;
     const slice = lines.slice(start, start + limit);
     const rendered = slice
-      .map((line, i) => `${String(start + i + 1).padStart(6)}\t${line}`)
+      .map((line, i) => `${String(start + i + 1).padStart(6)}\t${clampLine(line)}`)
       .join('\n');
     const omitted = lines.length - (start + slice.length);
     const suffix =

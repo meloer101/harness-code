@@ -54,4 +54,41 @@ describe('grepWithJs', () => {
     expect(result.content).toMatch(/showing 200 of at least 200 matches/);
     expect(result.content.split('\n').filter((l) => l.includes('hit line'))).toHaveLength(200);
   });
+
+  it('clamps a match on a multi-megabyte single line', async () => {
+    await writeFile(join(cwd, 'src', 'huge.jsonl'), `{"k":"${'v'.repeat(3_000_000)}"}\n`, 'utf8');
+
+    const result = await grepWithJs({ pattern: 'k' }, cwd);
+
+    expect(result.content.length).toBeLessThan(2_000);
+    expect(result.content).toMatch(/\+\d+ chars/);
+  });
+
+  it('does not descend into .agent (session logs) or dist', async () => {
+    await mkdir(join(cwd, '.agent', 'sessions'), { recursive: true });
+    await mkdir(join(cwd, 'dist'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'sessions', 's.jsonl'), 'needle in a log', 'utf8');
+    await writeFile(join(cwd, 'dist', 'out.js'), 'needle in a build', 'utf8');
+    await writeFile(join(cwd, 'src', 'real.ts'), 'needle in source', 'utf8');
+
+    const result = await grepWithJs({ pattern: 'needle' }, cwd);
+
+    expect(result.content).toContain('real.ts');
+    expect(result.content).not.toContain('.agent');
+    expect(result.content).not.toContain('dist/out.js');
+  });
+
+  it('honours a .gitignore in the search tree', async () => {
+    await writeFile(join(cwd, '.gitignore'), 'generated/\n*.bundle.js\n', 'utf8');
+    await mkdir(join(cwd, 'generated'), { recursive: true });
+    await writeFile(join(cwd, 'generated', 'g.ts'), 'target here', 'utf8');
+    await writeFile(join(cwd, 'src', 'app.bundle.js'), 'target here', 'utf8');
+    await writeFile(join(cwd, 'src', 'app.ts'), 'target here', 'utf8');
+
+    const result = await grepWithJs({ pattern: 'target' }, cwd);
+
+    expect(result.content).toContain('app.ts');
+    expect(result.content).not.toContain('generated');
+    expect(result.content).not.toContain('bundle');
+  });
 });
