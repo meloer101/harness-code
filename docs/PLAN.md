@@ -2,8 +2,9 @@
 
 > 本文件是项目的施工蓝图，与代码同仓库维护。
 >
-> **当前进度：Phase 4 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 + Phase 2 agent loop /
-> 工具集 + Phase 3 权限与沙箱 + Phase 3.5 token 预算/交互确认/Plan Mode + Phase 4 上下文工程）。
+> **当前进度：Phase 5 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 + Phase 2 agent loop /
+> 工具集 + Phase 3 权限与沙箱 + Phase 3.5 token 预算/交互确认/Plan Mode + Phase 4 上下文工程 +
+> Phase 5 MCP 接入）。
 > 每个 Phase 完成后在下方对应小节标注状态，不要事后重写计划本身 ——
 > 计划和实际的偏差本身就是有价值的记录。
 >
@@ -23,6 +24,11 @@
 > | 2026-09-07 | Phase 4 一次做完（compactor + ledger + 项目记忆） | 拆成 **Phase 4a（本次，只做 `compactor.ts`）** 与 Phase 4b（`ledger.ts` + `AGENTS.md`/`CLAUDE.md`）。4a：`onContextPressure` 之外新增 `onCompact` hook，`≥0.92` 自动触发；机制学 Claude Code（阈值→整段摘要→用结果继续），digest 内容学 Manus（任务状态 + "协作/代码/工具/输出"风格备忘，以 `AGENT_CONVENTIONS` 为基线只记偏差）；摘要走主模型（`smallModel` 可选覆盖）；`--no-compact` 关闭；会话 `.jsonl` 存压缩后快照，`--resume` 尊重压缩边界 | compactor 是四块里最能量化的、也最影响日常可用性，先单独跑通并验证；ledger 与压缩协同（压缩时判断哪些文件内容可安全丢）留到 4b 一起做 |
 > | 2026-09-07 | Phase 4b：`ledger.ts` 独立模块，含"重复读折叠成指针" | **不做重复读折叠**；ledger 收窄为 `SessionState.readMtime()` + `edit`/`write` 的 mtime 失效检查（读之后文件被外部改动 → 拒绝并提示重新 read）。外加 `context/memory.ts`：`AGENTS.md`/`CLAUDE.md` 从项目根到 cwd 逐层加载（+ `~/.agent`），作为 `project_memory` 段插在 `conventions`（cacheBreakpoint）之后 | 模型重复 read 未改动文件多是合理的上下文刷新（lost-in-the-middle），给指针 stub 恰在最该帮忙时帮不上；compactor 落地后重复副本会在压缩时被整段摘要掉；未到阈值就折叠得回写活动历史、打断 KV-cache。失效检查和项目记忆才是没争议的价值 |
 > | 2026-09-07 | Phase 4 收尾：`truncate.ts` / `cache.ts` / `budget.ts` | `truncate.ts`：`truncateHeadTail`（行对齐头尾截断，从 bash 提取）+ `truncateList`（grep 现在报 "showing 200 of N" 而非静默截断）。`cache.ts`：`SYSTEM_SEGMENT_ORDER` + `orderSystemSegments`（前缀顺序从隐性约定变成 `buildAgentSystemPrompt` 收尾强制的契约）+ `cacheHitRate`（每轮 `cached N (P%)`、会话结束 `cache P% of Nk input`）。`budget.ts`：**只做分类占用核算**（`analyzeStableParts` + `context` 事件带 `breakdown`，CLI 显示 `sys/mem/tools/hist`）—— **不做配额器** | 现在唯一真实降级杠杆是压缩历史（已有），项目记忆有上限、工具输出有截断，配额器没有实际分支可做；真正需要配额是 skills 渐进式披露落地后（清单 token 是核心输入）。降级逻辑推到 Phase 6。`cacheBreakpoint` 字段对当前 OpenAI-compat 面是死配置，留给 Phase 7 原生 Anthropic provider |
+> | 2026-09-07 | Phase 5：远程 HTTP server 支持 OAuth | 只做**静态 token**：`.mcp.json` 里 `headers` / `env` 值支持 `${ENV_VAR}` 插值，把 `Bearer ${TOKEN}` 写进 header 即可。OAuth 流程延后 | 静态 token 覆盖绝大多数自建 / 公开 server；OAuth 需要交互式回调，和 Phase 9 TUI 一起做成本更低 |
+> | 2026-09-07 | Phase 5b：把上一行延后的 OAuth + SSE transport 补齐（用户要求，接 Linear/Gmail 这类托管 server） | `mcp/oauth.ts`（`FileOAuthStore` → `~/.agent/mcp-auth/<slug>/`、`createOAuthProvider` 实现 SDK `OAuthClientProvider`、`openBrowser`）+ `mcp/oauth-login.ts`（`loginToServer`：本地回调 `http.Server` + `finishAuth` + 验证）。`hc mcp login/logout`。`client.ts` 加 SSE transport + http→sse 降级 + consume-mode provider（静默 refresh，不弹浏览器）。授权时机：交互式只 stderr 提示跑 `hc mcp login`（不中途弹浏览器）；OAuth 分支自动进入（无 `Authorization` header 即挂 authProvider）。测试：进程内 mock「OAuth AS + MCP server」跑通 discovery/DCR/token/authed-MCP 全链路，无网络。306 tests（+8）| Phase 9 才做的前提是"没有交互场景"，但 REPL 已经落地、`hc mcp login` 本身就是个独立交互命令，不依赖 TUI；SDK 自带 `OAuthClientProvider` + 两个 transport 的 `authProvider`，我们只写 provider 实现 + 回调 server |
+> | 2026-09-07 | Phase 5：MCP 工具复用现有 `ToolSpec`（zod schema） | `ToolSpec` 加可选 `rawInputSchema?: JSONSchema`：MCP tool 的契约是 server 自己的 raw JSON Schema，`schema` 字段只留一个 `z.record` 透传守卫，真正校验交给 server。`toolDefinition()` 优先用 `rawInputSchema` | zod schema 只是 harness 内部把 "校验" 和 "发给模型的 JSON Schema" 统一到一处的手段；MCP 的 schema 天然就是 JSON Schema，硬转成 zod 再转回去既丢信息又没意义 |
+> | 2026-09-07 | Phase 5：MCP 工具声明 `readOnly` / `concurrencySafe` | 一律写死 `false`（串行 + 按 "非只读" 过权限引擎，和 `bash` 同档）| 无法自省任意 MCP 工具是否有副作用；保守串行 + 默认 `ask` 是唯一安全的默认。将来可让 `.mcp.json` 逐工具覆盖，但现在没有消费者 |
+> | 2026-09-07 | Phase 5：MCP 权限默认档 | 与 Claude Code 对齐：`mcp__server__tool`（精确）/ `mcp__server`（整个 server）/ `mcp`（所有 MCP）三种粒度的 allow/ask/deny 规则，无规则时按 `modeDefault(tool, readOnly=false)` —— `ask`/`acceptEdits` 弹问、`plan`/`readOnly` 拒、`yolo` 放行、`deny` 永远赢。engine 里 `mcp__` 前缀在 `KNOWN_TOOLS` 检查前分流到 `evaluateMcp` | MCP 工具是运行时发现的，进不了静态 `KNOWN_TOOLS`；但没有理由让它绕开规则引擎 —— 复用同一套 allow/ask/deny 列表和同一条 `onBeforeToolCall` hook |
 
 ---
 
@@ -155,16 +161,27 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 
 ---
 
-### Phase 5 — MCP 接入（2 天）
+### Phase 5 — MCP 接入（2 天）✅ 已完成（2026-09-07，含 5b OAuth+SSE）
 
-`mcp/`：
+> `packages/core/src/mcp/`：`config.ts`（`.mcp.json` 两层加载 + `${ENV}` 插值 + `type:sse` / `auth`）、
+> `client.ts`（`McpConnection`，懒连接 + 10s 超时 + 失败隔离 + stdio/http/sse + http→sse 降级）、
+> `hub.ts`（`McpHub`，跨 server 聚合工具/资源/提示）、`tool-adapter.ts`
+> （`mcp__<server>__<tool>` + `rawInputSchema`）、`resources.ts`（`@server:uri` 注入）、
+> `serve.ts`（`hc mcp serve` 反向暴露内置工具）、`oauth.ts` + `oauth-login.ts`
+> （OAuth：`~/.agent/mcp-auth/` token 落盘 + 本地回调 + 静默 refresh）。权限引擎加
+> `evaluateMcp` 分支；CLI 加 `hc mcp list / serve / login / logout` + agent loop 自动挂载
+> MCP 工具。306 tests（+29）。偏差见上方记录表 5 行。
+
+`mcp/`（原计划）：
 - 基于 `@modelcontextprotocol/sdk` 的客户端，支持 **stdio** 与 **streamable HTTP** 两种 transport。
 - 配置读 `.mcp.json`（沿用 Claude Code 形态，生态 server 直接可用）。
 - 工具命名空间 `mcp__<server>__<tool>`，**懒连接**（首次用到才起进程）、连接超时、失败降级为"该 server 工具不可用"而不是整体崩。
 - 支持 MCP **resources**（`@server:uri` 引用注入上下文）与 **prompts**（暴露成斜杠命令）。
 - **反向：同时把自己做成 MCP server**（`hc mcp serve`），把内置工具集通过 MCP 暴露给别的 agent。工具 schema 已是现成的，成本很低，但"既是 client 又是 server"的双向叙事很值。
+- （5b 追加）**SSE transport** + **OAuth**：`hc mcp login <server>` 弹浏览器授权，token 落盘
+  `~/.agent/mcp-auth/`，之后静默 refresh；未授权时降级为提示，主循环不崩。
 
-**验证**：接一个真实公开 MCP server（如 filesystem/fetch）跑通调用；`hc mcp serve` 用官方 inspector 验证；断言 server 启动失败时主流程不受影响。
+**验证**：接一个真实公开 MCP server（如 filesystem/fetch）跑通调用；`hc mcp serve` 用官方 inspector 验证；断言 server 启动失败时主流程不受影响。5b：进程内 mock OAuth server 跑通全链路 + 真实 Linear（SSE+OAuth）手测。
 
 ---
 

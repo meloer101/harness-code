@@ -210,6 +210,39 @@ describe('PermissionEngine', () => {
     expect(v.decision).toBe('deny');
     if (v.decision === 'deny') expect(v.reason).toMatch(/unknown tool/i);
   });
+
+  describe('MCP tools', () => {
+    it('an unlisted mcp tool is asked in ask mode', async () => {
+      const v = await engine().evaluate({ toolName: 'mcp__gh__create_issue', input: {}, readOnly: false });
+      expect(v.decision).toBe('ask');
+    });
+
+    it('a server-level allow rule covers every tool on that server', async () => {
+      const e = engine({ allow: ['mcp__gh'] });
+      expect((await e.evaluate({ toolName: 'mcp__gh__create_issue', input: {}, readOnly: false })).decision).toBe('allow');
+      expect((await e.evaluate({ toolName: 'mcp__slack__post', input: {}, readOnly: false })).decision).toBe('ask');
+    });
+
+    it('an exact allow rule covers only that tool', async () => {
+      const e = engine({ allow: ['mcp__gh__list_issues'] });
+      expect((await e.evaluate({ toolName: 'mcp__gh__list_issues', input: {}, readOnly: false })).decision).toBe('allow');
+      expect((await e.evaluate({ toolName: 'mcp__gh__create_issue', input: {}, readOnly: false })).decision).toBe('ask');
+    });
+
+    it('deny beats allow for mcp tools', async () => {
+      const e = engine({ allow: ['mcp__gh'], deny: ['mcp__gh__delete_repo'] });
+      expect((await e.evaluate({ toolName: 'mcp__gh__delete_repo', input: {}, readOnly: false })).decision).toBe('deny');
+    });
+
+    it('plan mode refuses mcp tools; yolo allows them', async () => {
+      expect(
+        (await engine({ mode: 'plan' }).evaluate({ toolName: 'mcp__gh__x', input: {}, readOnly: false })).decision,
+      ).toBe('deny');
+      expect(
+        (await engine({ mode: 'yolo' }).evaluate({ toolName: 'mcp__gh__x', input: {}, readOnly: false })).decision,
+      ).toBe('allow');
+    });
+  });
 });
 
 describe('mergeSettings permissions', () => {

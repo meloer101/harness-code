@@ -12,6 +12,7 @@ export {
   matchBashPattern,
   matchPathGlob,
   ruleMatchesBash,
+  ruleMatchesMcp,
   ruleMatchesPath,
 } from './match.js';
 export {

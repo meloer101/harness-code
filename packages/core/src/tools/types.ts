@@ -36,6 +36,14 @@ export interface ToolSpec<TInput = unknown> {
   name: string;
   description: string;
   schema: z.ZodType<TInput>;
+  /**
+   * The JSON Schema sent to the model, when it should not be derived from
+   * `schema`. MCP tools set this: their contract is a raw JSON Schema the
+   * server owns, and `schema` is only a passthrough guard (real validation
+   * happens server-side). Builtin tools leave it unset and the definition is
+   * generated from `schema`.
+   */
+  rawInputSchema?: JSONSchema;
   /** Never mutates the workspace. */
   readOnly: boolean;
   /** Safe to run concurrently with other concurrency-safe tools. Implies readOnly in practice. */
@@ -47,7 +55,9 @@ export interface ToolSpec<TInput = unknown> {
 export type AnyToolSpec = ToolSpec<unknown>;
 
 export function toolDefinition(spec: AnyToolSpec): ToolDefinition {
-  const schema = z.toJSONSchema(spec.schema) as JSONSchema;
+  const schema = spec.rawInputSchema
+    ? ({ ...spec.rawInputSchema } as JSONSchema)
+    : (z.toJSONSchema(spec.schema) as JSONSchema);
   delete schema.$schema;
   return {
     name: spec.name,

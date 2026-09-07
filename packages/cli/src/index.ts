@@ -30,12 +30,18 @@ import {
   exitPlanModeTool,
   findProjectRoot,
   isSandboxExecAvailable,
+  FileOAuthStore,
+  loadMcpConfig,
   loadProjectMemory,
   loadSession,
   loadSettings,
+  loginToServer,
+  McpHub,
   mergeHooks,
   nonInteractiveAskHandler,
   rebuildSessionState,
+  resolveResources,
+  serveOverStdio,
 } from '@harness-code/core';
 import type {
   AgentControl,
@@ -258,6 +264,37 @@ program
         process.stderr.write(`\x1b[2mproject memory: ${rel.join(', ')}\x1b[0m\n`);
       }
 
+      // MCP servers from .mcp.json (project + ~/.agent). Connections are lazy —
+      // `hub.toolSpecs()` below is what actually spawns them, and a server that
+      // fails to connect just contributes no tools.
+      const mcpConfig = await loadMcpConfig(cwd);
+      const hub = new McpHub(mcpConfig.servers);
+      const mcpToolSpecs = hub.empty ? [] : await hub.toolSpecs();
+      if (!hub.empty) {
+        const s = hub.status();
+        const ok = s.filter((x) => x.state === 'ready');
+        const failed = s.filter((x) => x.state === 'failed');
+        process.stderr.write(
+          `\x1b[2mmcp: ${ok.length}/${s.length} server${s.length === 1 ? '' : 's'} ready, ` +
+            `${mcpToolSpecs.length} tool${mcpToolSpecs.length === 1 ? '' : 's'}` +
+            (failed.length > 0
+              ? ` — unavailable: ${failed.map((x) => `${x.name} (${x.error ?? 'failed'})`).join(', ')}`
+              : '') +
+            `\x1b[0m\n`,
+        );
+      }
+      // MCP prompts become `/name` (or `/server:name` on collision) commands in
+      // the REPL. Keyed both ways so either form resolves.
+      const mcpPrompts = new Map<string, { server: string; name: string }>();
+      if (!hub.empty) {
+        for (const { server, prompt } of await hub.prompts()) {
+          const ref = { server, name: prompt.name };
+          mcpPrompts.set(`${server}:${prompt.name}`, ref);
+          if (!mcpPrompts.has(prompt.name)) mcpPrompts.set(prompt.name, ref);
+        }
+      }
+      const closeHub = (): Promise<void> => hub.closeAll();
+
       const agentDir = join(await findProjectRoot(cwd), AGENT_DIR);
       const recorder = new SessionRecorder(agentDir, opts.resume);
       const priorMessages = opts.resume ? await loadSession(agentDir, opts.resume) : [];
@@ -432,7 +469,11 @@ program
       // appears there — so once a plan is approved the next turn drops both.
       function buildLoop(signal: AbortSignal): AgentLoop {
         const activeMode = engine.getMode();
-        const specs = activeMode === 'plan' ? [...builtinTools(), exitPlanModeTool] : builtinTools();
+        const specs = [
+          ...builtinTools(),
+          ...(activeMode === 'plan' ? [exitPlanModeTool] : []),
+          ...mcpToolSpecs,
+        ];
         return new AgentLoop({
           model: resolved,
           tools: new ToolRegistry(specs),
@@ -458,11 +499,20 @@ program
       }
 
       async function runOneTurn(text: string, messages: Message[]) {
+        let effectiveText = text;
+        if (!hub.empty) {
+          const { context, notes } = await resolveResources(hub, text);
+          for (const n of notes) process.stderr.write(`\x1b[2m@resource ${n}\x1b[0m\n`);
+          if (context.length > 0) effectiveText = `${context.join('\n\n')}\n\n${text}`;
+        }
         const controller = new AbortController();
         const onSigint = (): void => controller.abort();
         process.on('SIGINT', onSigint);
         try {
-          const userMessage = { role: 'user' as const, content: [{ type: 'text' as const, text }] };
+          const userMessage = {
+            role: 'user' as const,
+            content: [{ type: 'text' as const, text: effectiveText }],
+          };
           await recorder.recordMessage(userMessage);
           const result = await buildLoop(controller.signal).run([...messages, userMessage]);
           process.stdout.write('\n');
@@ -484,6 +534,7 @@ program
           );
         } finally {
           prompter?.close(); // no-op unless an interactive prompt made its own readline
+          await closeHub();
         }
         return;
       }
@@ -527,9 +578,38 @@ program
           rl.close();
           return;
         }
+        let turnText = text;
+        if (text.startsWith('/')) {
+          const [cmd, ...rest] = text.slice(1).split(/\s+/);
+          const ref = cmd ? mcpPrompts.get(cmd) : undefined;
+          if (!ref) {
+            process.stderr.write(
+              `\x1b[2munknown command "/${cmd}". MCP prompts available: ${
+                mcpPrompts.size > 0 ? [...new Set([...mcpPrompts.values()].map((p) => p.name))].join(', ') : '(none)'
+              }\x1b[0m\n`,
+            );
+            rl.prompt();
+            return;
+          }
+          try {
+            const conn = hub.connection(ref.server);
+            const body = await conn?.getPrompt(ref.name, rest.length > 0 ? { input: rest.join(' ') } : {});
+            if (!body) {
+              process.stderr.write(`\x1b[2mprompt "${ref.name}" returned nothing\x1b[0m\n`);
+              rl.prompt();
+              return;
+            }
+            turnText = body;
+            process.stderr.write(`\x1b[2m/${cmd} → ${body.length} chars from ${ref.server}\x1b[0m\n`);
+          } catch (err) {
+            process.stderr.write(`\x1b[31m/${cmd}: ${errorMessageOf(err)}\x1b[0m\n`);
+            rl.prompt();
+            return;
+          }
+        }
         process.off('SIGINT', onIdleSigint);
         try {
-          const result = await runOneTurn(text, messages);
+          const result = await runOneTurn(turnText, messages);
           messages = result.messages;
         } catch (err) {
           process.stderr.write(`\x1b[31mhc: ${errorMessageOf(err)}\x1b[0m\n`);
@@ -545,13 +625,95 @@ program
       });
 
       rl.on('close', () => {
-        void queue.finally(() => {
-          process.stderr.write(`\n\x1b[2msession ${recorder.id}${cacheSummary(sessionUsage)}\x1b[0m\n`);
-          process.exit(0);
-        });
+        void queue
+          .finally(() => closeHub())
+          .finally(() => {
+            process.stderr.write(`\n\x1b[2msession ${recorder.id}${cacheSummary(sessionUsage)}\x1b[0m\n`);
+            process.exit(0);
+          });
       });
     },
   );
+
+const mcp = program.command('mcp').description('Model Context Protocol: connect servers, or expose this tool as one');
+
+mcp
+  .command('list')
+  .description('Show configured MCP servers and the tools they expose')
+  .option('--cwd <dir>', 'workspace root to resolve .mcp.json against', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    const cwd = resolvePath(opts.cwd);
+    const { servers, sources } = await loadMcpConfig(cwd);
+    if (sources.length > 0) console.log(`config: ${sources.join(', ')}`);
+    if (servers.length === 0) {
+      console.log('no MCP servers configured (.mcp.json not found or empty)');
+      return;
+    }
+    const hub = new McpHub(servers);
+    const specs = await hub.toolSpecs();
+    for (const s of hub.status()) {
+      const mark = s.state === 'ready' ? '✓' : s.state === 'failed' ? '✗' : '·';
+      const server = servers.find((x) => x.name === s.name);
+      let auth = '';
+      if (server && server.transport !== 'stdio') {
+        const hasStatic = Object.keys(server.headers).some((h) => h.toLowerCase() === 'authorization');
+        const authed = (await new FileOAuthStore(server.url).tokens()) !== undefined;
+        auth = hasStatic && server.auth !== 'oauth' ? '  [static token]' : authed ? '  [oauth ✓]' : '  [oauth — run: hc mcp login]';
+      }
+      console.log(
+        `${mark} ${s.name} (${s.transport})  ${s.state}${auth}${s.error ? ` — ${s.error}` : ''}`,
+      );
+      for (const spec of specs.filter((t) => t.name.startsWith(`mcp__${s.name}__`))) {
+        console.log(`    ${spec.name}`);
+      }
+    }
+    await hub.closeAll();
+  });
+
+mcp
+  .command('serve')
+  .description('Expose the builtin tool set over MCP on stdio (for another agent or the inspector)')
+  .action(async () => {
+    process.stderr.write('\x1b[2mharness-code MCP server on stdio — builtin tools exposed\x1b[0m\n');
+    await serveOverStdio({ tools: builtinTools() });
+  });
+
+mcp
+  .command('login')
+  .description('Authorize a remote (http/sse) MCP server via OAuth — opens a browser')
+  .argument('<server>', 'server name from .mcp.json')
+  .option('--cwd <dir>', 'workspace root to resolve .mcp.json against', process.cwd())
+  .action(async (name: string, opts: { cwd: string }) => {
+    const { servers } = await loadMcpConfig(resolvePath(opts.cwd));
+    const server = servers.find((s) => s.name === name);
+    if (!server) fail(`no MCP server named "${name}" in .mcp.json`);
+    if (server.transport === 'stdio') {
+      fail(`"${name}" is a stdio server — it does not use OAuth. Put credentials in its "env".`);
+    }
+    try {
+      const { status } = await loginToServer(server);
+      console.log(
+        status === 'already-authorized'
+          ? `✓ ${name} was already authorized`
+          : `✓ authorized ${name}`,
+      );
+    } catch (err) {
+      fail(`login failed: ${errorMessageOf(err)}`);
+    }
+  });
+
+mcp
+  .command('logout')
+  .description('Forget cached OAuth tokens for a remote MCP server')
+  .argument('<server>', 'server name from .mcp.json')
+  .option('--cwd <dir>', 'workspace root to resolve .mcp.json against', process.cwd())
+  .action(async (name: string, opts: { cwd: string }) => {
+    const { servers } = await loadMcpConfig(resolvePath(opts.cwd));
+    const server = servers.find((s) => s.name === name);
+    if (!server || server.transport === 'stdio') fail(`no remote MCP server named "${name}"`);
+    await new FileOAuthStore(server.url).clear();
+    console.log(`✓ cleared cached credentials for ${name}`);
+  });
 
 program
   .command('doctor')

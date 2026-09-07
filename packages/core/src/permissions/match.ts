@@ -67,6 +67,19 @@ export function ruleMatchesPath(rule: PermissionRule, toolName: string, relPath:
   return matchPathGlob(relPath, rule.pattern);
 }
 
+/**
+ * Match an `mcp__server__tool` call against a rule. MCP rules are whole-name
+ * (no `(specifier)`): `mcp__github` matches every tool on that server,
+ * `mcp__github__create_issue` matches just the one, and a bare `mcp` matches
+ * any MCP tool.
+ */
+export function ruleMatchesMcp(rule: PermissionRule, toolName: string): boolean {
+  if (rule.pattern !== undefined) return false;
+  const t = toolName.toLowerCase();
+  const r = rule.tool;
+  return r === t || t.startsWith(`${r}__`);
+}
+
 export function ruleMatchesBash(rule: PermissionRule, argv: string[]): boolean {
   if (!ruleMatchesTool(rule, 'bash')) return false;
   if (rule.pattern === undefined) return true;

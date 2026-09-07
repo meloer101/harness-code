@@ -12,3 +12,6 @@ dist/
 evals/.results/
 coverage/
 *.log
+
+# local MCP server config (test / personal)
+.mcp.json

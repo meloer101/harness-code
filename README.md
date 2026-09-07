@@ -4,11 +4,12 @@ A coding agent built from scratch — MCP client and server, skills, plan mode,
 and the harness engineering underneath: context management, a permission
 sandbox, sub-agents, and an eval suite that measures whether any of it works.
 
-> Status: **Phase 4 of 10**. The provider compatibility layer, agent loop,
-> tool set, permission sandbox, plan mode, and context engineering (compaction,
-> project memory, prompt-cache stability, per-category accounting) are complete
-> and tested. MCP, skills, sub-agents, telemetry and the TUI are still ahead —
-> see [the plan](#roadmap).
+> Status: **Phase 5 of 10**. The provider compatibility layer, agent loop,
+> tool set, permission sandbox, plan mode, context engineering (compaction,
+> project memory, prompt-cache stability, per-category accounting), and MCP
+> (client for stdio / HTTP / SSE servers including the OAuth handshake, plus
+> `hc mcp serve` the other way) are complete and tested. Skills, sub-agents,
+> telemetry and the TUI are still ahead — see [the plan](#roadmap).
 
 ## Why this exists
 
@@ -112,9 +113,60 @@ denylist blocks `.env*`, `.git/config`, private keys, and similar. In a
 non-interactive run, an `ask` verdict has no one to ask, so it deterministically
 denies rather than hanging.
 
+## MCP
+
+`hc` is an MCP client and an MCP server.
+
+As a **client**, it reads `.mcp.json` (the same shape Claude Code uses, so an
+ecosystem server works unchanged) from the project root and `~/.agent/`:
+
+```json
+{ "mcpServers": {
+    "fs":     { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "api":    { "type": "http", "url": "https://example.com/mcp",
+                "headers": { "Authorization": "Bearer ${API_TOKEN}" } },
+    "linear": { "type": "sse", "url": "https://mcp.linear.app/sse" }
+} }
+```
+
+stdio, streamable-HTTP and SSE transports. For a static-token server, `${ENV}`
+interpolation in a header is all it takes. For a hosted server that speaks OAuth
+(Linear, Notion, …), authorize once:
+
+```bash
+node packages/cli/dist/index.js mcp login linear   # opens a browser, caches tokens
+node packages/cli/dist/index.js mcp logout linear  # forget them
+```
+
+Tokens land in `~/.agent/mcp-auth/<server>/` and refresh silently after that; a
+non-interactive run that hits an un-authorized server degrades to "run
+`hc mcp login <name>`" rather than blocking. Connections are **lazy** and
+**isolated** — a server that fails to connect contributes no tools and prints
+one line, it never takes the run down. Discovered tools are namespaced
+`mcp__<server>__<tool>` and ride the **same permission engine** as the builtins:
+
+| Rule | Matches |
+| --- | --- |
+| `mcp__github__create_issue` | that one tool |
+| `mcp__github` | every tool on the `github` server |
+| `mcp` | every MCP tool, any server |
+
+`deny` still beats `allow`; an unlisted MCP tool is asked in `ask` /
+`acceptEdits`, refused in `plan` / `readOnly`, and allowed in `yolo` — the same
+default `bash` gets. MCP **resources** are pulled in with `@server:uri` mentions;
+MCP **prompts** become `/name` commands in the REPL.
+
+As a **server**, `hc mcp serve` exposes the builtin tool set over stdio for
+another agent or the official inspector:
+
+```bash
+node packages/cli/dist/index.js mcp serve      # builtin tools over MCP/stdio
+node packages/cli/dist/index.js mcp list        # configured servers and their tools
+```
+
 ## Testing
 
-172 tests, no network, no credentials, no API spend:
+306 tests, no network, no credentials, no API spend:
 
 ```bash
 pnpm test
@@ -130,7 +182,9 @@ The agent loop, tools, and permission engine are covered the same way: a
 scripted provider stands in for the model (queue up tool calls and text
 turns, assert on what the loop does with them), so concurrency behaviour,
 budget cutoffs, and permission denials are all deterministic without a real
-endpoint.
+endpoint. The MCP client is tested against real stdio subprocesses and an
+in-process mock that speaks the OAuth discovery / DCR / token dance, so
+`hc mcp login` has end-to-end coverage with nothing leaving the machine.
 
 ## Layout
 
@@ -150,7 +204,7 @@ evals             benchmark tasks and fixtures
 | 2 | Agent loop and tools | done |
 | 3 | Permissions and sandbox | done |
 | 4 | Context engineering — compaction, project memory, truncation, cache stability | done |
-| 5 | MCP client and server | |
+| 5 | MCP client and server | done |
 | 6 | Skills and plan mode | |
 | 7 | Sub-agents and parallelism | |
 | 8 | Telemetry and eval suite | |

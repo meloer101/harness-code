@@ -1,6 +1,6 @@
 import { inspectBash } from './bash-ast.js';
 import { KNOWN_TOOLS, PLANS_DIR_PREFIX, READ_ONLY_TOOLS } from './defaults.js';
-import { ruleMatchesBash, ruleMatchesPath } from './match.js';
+import { ruleMatchesBash, ruleMatchesMcp, ruleMatchesPath } from './match.js';
 import { parseRule } from './parse.js';
 import { PathEscapeError, isSensitivePath, relativeToWorkspace, resolveInWorkspace } from './paths.js';
 import type {
@@ -54,6 +54,16 @@ export class PermissionEngine {
 
   async evaluate(req: EvaluateRequest): Promise<PermissionVerdict> {
     const tool = req.toolName.toLowerCase();
+
+    // MCP tools (`mcp__<server>__<tool>`) are not in KNOWN_TOOLS — they are
+    // discovered at runtime. They ride the same allow/ask/deny lists, matched
+    // by server or by exact name, and default to "not read-only" so an
+    // unlisted one is asked in `ask`/`acceptEdits` and refused in
+    // `plan`/`readOnly`, the same as `bash`.
+    if (tool.startsWith('mcp__')) {
+      return this.evaluateMcp(tool);
+    }
+
     if (!KNOWN_TOOLS.has(tool)) {
       return { decision: 'deny', reason: `Unknown tool "${req.toolName}"` };
     }
@@ -81,6 +91,16 @@ export class PermissionEngine {
     const denied = this.deny.find((r) => r.tool === 'exit_plan_mode');
     if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
     return { decision: 'allow' };
+  }
+
+  private evaluateMcp(tool: string): PermissionVerdict {
+    const denied = this.deny.find((r) => ruleMatchesMcp(r, tool));
+    if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
+    const allowed = this.allow.find((r) => ruleMatchesMcp(r, tool));
+    if (allowed) return { decision: 'allow' };
+    const asked = this.askRules.find((r) => ruleMatchesMcp(r, tool));
+    if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
+    return this.modeDefault(tool, false);
   }
 
   private evaluateTodo(): PermissionVerdict {

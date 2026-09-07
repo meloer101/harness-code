@@ -190,9 +190,11 @@ export function interactiveAskHandler(
 ): AskHandler {
   return async ({ toolName, input, reason, signal }) => {
     opts.onBeforePrompt?.();
-    const label = capitalize(toolName);
+    // Builtins read better capitalized ("Bash …"); namespaced MCP tool names
+    // (`mcp__linear__list_issues`) are left exactly as they are.
+    const label = toolName.includes('__') ? toolName : capitalize(toolName);
     const res = await prompter.confirm({
-      title: capitalize(reason),
+      title: reason.startsWith('mcp__') ? reason : capitalize(reason),
       detail: describeToolInput(toolName, input),
       alwaysLabel: label,
       ...(signal ? { signal } : {}),
