@@ -25,6 +25,7 @@ import type { SystemSegment } from '../provider/types.js';
 export const SYSTEM_SEGMENT_ORDER = [
   'identity',
   'conventions',
+  'agent_role',
   'available_skills',
   'project_memory',
   'plan_mode',

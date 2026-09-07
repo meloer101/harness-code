@@ -281,6 +281,23 @@ describe('PermissionEngine', () => {
       expect(v.decision).toBe('ask');
     });
   });
+
+  describe('task tool', () => {
+    const call = { toolName: 'task', input: { subagent_type: 'explore', prompt: 'x' }, readOnly: false };
+
+    it('is gated like a write tool: asked in ask/acceptEdits, denied in plan/readOnly', async () => {
+      expect((await engine({ mode: 'ask' }).evaluate(call)).decision).toBe('ask');
+      expect((await engine({ mode: 'acceptEdits' }).evaluate(call)).decision).toBe('ask');
+      expect((await engine({ mode: 'plan' }).evaluate(call)).decision).toBe('deny');
+      expect((await engine({ mode: 'readOnly' }).evaluate(call)).decision).toBe('deny');
+      expect((await engine({ mode: 'yolo' }).evaluate(call)).decision).toBe('allow');
+    });
+
+    it('respects allow and deny rules', async () => {
+      expect((await engine({ mode: 'ask', allow: ['Task'] }).evaluate(call)).decision).toBe('allow');
+      expect((await engine({ mode: 'yolo', deny: ['Task'] }).evaluate(call)).decision).toBe('deny');
+    });
+  });
 });
 
 describe('mergeSettings permissions', () => {

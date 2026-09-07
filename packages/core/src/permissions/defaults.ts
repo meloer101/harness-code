@@ -8,6 +8,7 @@ export const KNOWN_TOOLS = new Set([
   'bash',
   'todo',
   'skill',
+  'task',
   'exit_plan_mode',
 ]);
 

@@ -46,7 +46,12 @@ export interface ToolSpec<TInput = unknown> {
   rawInputSchema?: JSONSchema;
   /** Never mutates the workspace. */
   readOnly: boolean;
-  /** Safe to run concurrently with other concurrency-safe tools. Implies readOnly in practice. */
+  /**
+   * Safe to run concurrently with other concurrency-safe tool calls in the same
+   * turn. Read-only tools are the common case, but `task` is also safe (each
+   * sub-agent is isolated) while not being read-only. A write tool that would
+   * race another declares `false`.
+   */
   concurrencySafe: boolean;
   execute(input: TInput, ctx: ToolContext): Promise<ToolResult>;
 }

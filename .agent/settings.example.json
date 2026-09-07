@@ -4,6 +4,7 @@
   "temperature": 0,
   "maxTurns": 50,
   "maxCostUSD": 2.0,
+  "subagentMaxTurns": 20,
 
   "providers": {
     "my-proxy": {
@@ -23,7 +24,7 @@
 
   "permissions": {
     "mode": "ask",
-    "allow": ["Read", "Glob", "Grep", "Skill", "Bash(git status:*)"],
+    "allow": ["Read", "Glob", "Grep", "Skill", "Task", "Bash(git status:*)"],
     "ask": [],
     "deny": ["Read(.env*)", "Bash(rm -rf *)"]
   }

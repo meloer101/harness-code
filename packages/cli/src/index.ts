@@ -27,7 +27,10 @@ import {
   createCompactor,
   createPermissionEngine,
   createPermissionHooks,
+  buildSubagentSystemPrompt,
   createSkillTool,
+  createTaskTool,
+  discoverAgents,
   discoverSkills,
   exitPlanModeTool,
   findProjectRoot,
@@ -42,6 +45,8 @@ import {
   mergeHooks,
   narrowToolSpecs,
   nonInteractiveAskHandler,
+  runSubagent,
+  subagentToolSpecs,
   SkillCatalog,
   rebuildSessionState,
   resolveResources,
@@ -235,6 +240,7 @@ program
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
   .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
   .option('--no-skills', 'do not discover or offer skills')
+  .option('--no-subagents', 'do not discover sub-agents or offer the task tool')
   .action(
     async (
       prompt: string | undefined,
@@ -251,6 +257,7 @@ program
         deny: string[];
         compact: boolean;
         skills: boolean;
+        subagents: boolean;
       },
     ) => {
       const cwd = resolvePath(opts.cwd);
@@ -288,6 +295,20 @@ program
               ? ` — ${skillCatalog.dropped.length} not advertised (manifest budget)`
               : '') +
             `\x1b[0m\n`,
+        );
+      }
+
+      // Sub-agents from .agent/agents (project + ~/.agent) plus the builtins.
+      // Dispatched via the `task` tool; each runs in its own context window.
+      const { agents: discoveredAgents } = opts.subagents
+        ? await discoverAgents(cwd, {
+            onSkip: (reason) => process.stderr.write(`\x1b[2mskipped ${reason}\x1b[0m\n`),
+          })
+        : { agents: [] };
+      if (discoveredAgents.length > 0) {
+        process.stderr.write(
+          `\x1b[2magents: ${discoveredAgents.length} available ` +
+            `(${discoveredAgents.map((a) => a.name).join(', ')})\x1b[0m\n`,
         );
       }
 
@@ -407,7 +428,16 @@ program
         );
       }
 
-      const { maxTurns, maxCostUSD, maxTokens, maxOutputTokens, temperature, contextCompactRatio, compactKeepTurns } =
+      const {
+        maxTurns,
+        maxCostUSD,
+        maxTokens,
+        maxOutputTokens,
+        temperature,
+        contextCompactRatio,
+        compactKeepTurns,
+        subagentMaxTurns: subagentMaxTurnsSetting,
+      } =
         resolveBudgets(
           {
             maxTurns: opts.maxTurns,
@@ -437,6 +467,65 @@ program
               }),
             };
       const hooks = mergeHooks(createPermissionHooks(engine, askHandler), compactHook);
+
+      // The `task` tool: dispatch a sub-agent in its own context window. The run
+      // itself is a closure over the host's registry / engine / settings — the
+      // child inherits the parent's permission rules verbatim (so it can never
+      // escalate), gets its tool set narrowed to the agent def's `tools` (minus
+      // `task` — no recursion), and always uses the deny-on-ask handler since
+      // there is no human in a sub-agent loop.
+      const subagentMaxTurns = subagentMaxTurnsSetting ?? 20;
+      const taskTool =
+        discoveredAgents.length > 0
+          ? createTaskTool({
+              agents: discoveredAgents,
+              async run(def, subPrompt, runCtx) {
+                const childModel = def.model ? registry.resolve(def.model) : resolved;
+                const childEngine = createPermissionEngine({
+                  workspaceRoot: cwd,
+                  mode: engine.getMode(),
+                  allow: [...(permissions.allow ?? []), ...opts.allow],
+                  ask: [...(permissions.ask ?? []), ...opts.ask],
+                  deny: [...(permissions.deny ?? []), ...opts.deny],
+                });
+                const childTools = subagentToolSpecs(builtinTools(), def);
+                process.stderr.write(`\x1b[2m  ⤷ ${def.name}: dispatched\x1b[0m\n`);
+                const result = await runSubagent({
+                  model: childModel,
+                  tools: childTools,
+                  system: buildSubagentSystemPrompt({
+                    cwd,
+                    role: def.body,
+                    ...(memory.text ? { projectMemory: memory.text } : {}),
+                  }),
+                  hooks: mergeHooks(
+                    createPermissionHooks(childEngine, nonInteractiveAskHandler),
+                    compactHook,
+                  ),
+                  cwd,
+                  prompt: subPrompt,
+                  maxTurns: subagentMaxTurns,
+                  ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+                  ...(temperature !== undefined ? { temperature } : {}),
+                  ...(contextCompactRatio !== undefined ? { contextCompactRatio } : {}),
+                  ...(runCtx.signal ? { signal: runCtx.signal } : {}),
+                  onEvent: (ev) => {
+                    if (ev.type === 'tool_call_start') {
+                      process.stderr.write(
+                        `\x1b[2m  ⤷ ${def.name}: ${ev.name} ${JSON.stringify(ev.input)}\x1b[0m\n`,
+                      );
+                    }
+                  },
+                });
+                process.stderr.write(
+                  `\x1b[2m  ⤷ ${def.name}: done (${result.turns} turn${result.turns === 1 ? '' : 's'}, ` +
+                    `${fmtTokens(result.usage.inputTokens + result.usage.outputTokens)} tokens)\x1b[0m\n`,
+                );
+                sessionUsage = sessionUsage ? addUsage(sessionUsage, result.usage) : result.usage;
+                return result;
+              },
+            })
+          : undefined;
 
       let lastContext: ContextSnapshot | undefined;
       let contextWarned = false;
@@ -494,6 +583,15 @@ program
             } else if (event.name === 'exit_plan_mode') {
               closeThinking();
               process.stderr.write(`\x1b[2m${event.result.content}\x1b[0m\n`);
+            } else if (event.name === 'task') {
+              closeThinking();
+              process.stderr.write(`\x1b[2m  ⤷ report:\x1b[0m\n`);
+              process.stderr.write(
+                event.result.content
+                  .split('\n')
+                  .map((l) => `\x1b[2m  │ ${l}\x1b[0m`)
+                  .join('\n') + '\n',
+              );
             }
             break;
           default:
@@ -515,6 +613,7 @@ program
           ...builtinTools(),
           ...(activeMode === 'plan' ? [exitPlanModeTool] : []),
           ...(skillCatalog.size > 0 ? [createSkillTool(skillCatalog)] : []),
+          ...(taskTool ? [taskTool] : []),
           ...mcpToolSpecs,
         ];
         // A loaded skill's `allowed-tools` narrows what the model sees next turn.
@@ -783,6 +882,31 @@ program
       console.log(`  ${s.description}`);
       if (s.allowedTools) console.log(`  allowed-tools: ${s.allowedTools.join(' ')}`);
       console.log(`  ${s.dir}`);
+    }
+  });
+
+program
+  .command('agents')
+  .description('List discovered sub-agents (project, user, and builtin)')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/agents against', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    const cwd = resolvePath(opts.cwd);
+    const { agents, counts } = await discoverAgents(cwd, {
+      onSkip: (reason) => console.log(`· skipped ${reason}`),
+    });
+    if (agents.length === 0) {
+      console.log('no sub-agents found');
+      return;
+    }
+    console.log(
+      `${agents.length} sub-agent${agents.length === 1 ? '' : 's'} ` +
+        `(project ${counts.project}, user ${counts.user}, builtin ${counts.builtin})\n`,
+    );
+    for (const a of agents) {
+      console.log(`${a.name}  [${a.source}]`);
+      console.log(`  ${a.description}`);
+      console.log(`  tools: ${a.tools ? a.tools.join(' ') : '(inherits all builtin tools)'}`);
+      if (a.model) console.log(`  model: ${a.model}`);
     }
   });
 

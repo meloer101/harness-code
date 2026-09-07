@@ -4,13 +4,14 @@ A coding agent built from scratch — MCP client and server, skills, plan mode,
 and the harness engineering underneath: context management, a permission
 sandbox, sub-agents, and an eval suite that measures whether any of it works.
 
-> Status: **Phase 6 of 10**. The provider compatibility layer, agent loop,
+> Status: **Phase 7 of 10**. The provider compatibility layer, agent loop,
 > tool set, permission sandbox, plan mode, context engineering (compaction,
 > project memory, prompt-cache stability, per-category accounting), MCP
 > (client for stdio / HTTP / SSE servers including the OAuth handshake, plus
-> `hc mcp serve` the other way), and skills (progressive disclosure, bundled
-> examples, `allowed-tools` narrowing) are complete and tested. Sub-agents,
-> telemetry and the TUI are still ahead — see [the plan](#roadmap).
+> `hc mcp serve` the other way), skills (progressive disclosure, bundled
+> examples, `allowed-tools` narrowing), and sub-agents (isolated context
+> windows, narrowed permissions, parallel dispatch) are complete and tested.
+> Telemetry and the TUI are still ahead — see [the plan](#roadmap).
 
 ## Why this exists
 
@@ -198,9 +199,44 @@ The `skill` tool is read-only (allowed in every mode, `plan` included; a
 multiple active skills intersect — at the "what the model sees" layer; the
 permission engine's own rules are unchanged.
 
+## Sub-agents
+
+A sub-agent is a `<name>.md` file (`.agent/agents/`, `~/.agent/agents/`, or the
+builtins `explore` and `plan`) with frontmatter `name` / `description` /
+optional `tools` / optional `model`, and a body that is its role brief.
+
+The `task` tool dispatches one: it runs its own `AgentLoop` in a **fresh context
+window** on just the prompt you give it, and only its final message comes back to
+the caller as the tool result. A grep-heavy investigation that would otherwise
+push tens of thousands of tokens of match output into the main conversation
+instead costs it one paragraph.
+
+```bash
+node packages/cli/dist/index.js agents   # what's discovered, and each one's tools
+```
+
+- **Permissions only narrow.** The sub-agent gets a new permission engine with
+  the parent's exact `allow`/`ask`/`deny` rules and mode — never a rule added —
+  and its tool set is filtered to the def's `tools` (so `explore`, declaring
+  `read glob grep`, cannot write whatever the parent mode is). `task` itself is
+  never in a sub-agent's tools: no recursion.
+- **Parallel.** Several `task` calls in one turn run concurrently (bounded by the
+  loop's concurrency cap) — the loop parallelizes any `concurrencySafe` tool, and
+  each sub-agent is isolated.
+- **Budgeted.** `subagentMaxTurns` (default 20) caps each one. Its token use is
+  folded into the session total shown at the end; the `task` result carries a
+  `— explore · 2 turns · 3.1k tokens` footer.
+- The `task` tool is gated like a write tool — asked in `ask`/`acceptEdits`,
+  refused in `plan`/`readOnly` — since a custom sub-agent with no `tools` limit
+  could write. `--allow Task` opts in; `--no-subagents` drops it entirely.
+
+Measured on "which file defines `PermissionEngine` and what constructs it":
+dispatched to `explore`, the parent's history stayed at **4.1k tokens** (the
+report), versus the **3.1k** the sub-agent spent on the actual searching.
+
 ## Testing
 
-337 tests, no network, no credentials, no API spend:
+362 tests, no network, no credentials, no API spend:
 
 ```bash
 pnpm test
@@ -223,7 +259,7 @@ in-process mock that speaks the OAuth discovery / DCR / token dance, so
 ## Layout
 
 ```
-packages/core     provider layer · agent loop · tools · context · permissions · mcp · skills · telemetry
+packages/core     provider layer · agent loop · tools · context · permissions · mcp · skills · sub-agents · telemetry
 packages/cli      one-shot, scriptable entry point
 packages/tui      interactive terminal UI (Ink)
 evals             benchmark tasks and fixtures
@@ -240,7 +276,7 @@ evals             benchmark tasks and fixtures
 | 4 | Context engineering — compaction, project memory, truncation, cache stability | done |
 | 5 | MCP client and server | done |
 | 6 | Skills and plan mode | done |
-| 7 | Sub-agents and parallelism | |
+| 7 | Sub-agents and parallelism | done |
 | 8 | Telemetry and eval suite | |
 | 9 | CLI and TUI | |
 | 10 | Documentation | |

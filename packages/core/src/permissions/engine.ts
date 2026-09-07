@@ -80,6 +80,10 @@ export class PermissionEngine {
       return this.evaluateSkill();
     }
 
+    if (tool === 'task') {
+      return this.evaluateWholeTool('task', false);
+    }
+
     if (tool === 'exit_plan_mode') {
       return this.evaluateExitPlanMode();
     }
@@ -108,28 +112,28 @@ export class PermissionEngine {
   }
 
   /**
-   * `skill` only pulls bundled instructions into context — no workspace effect —
-   * so it is allowed in every mode, `plan` and `readOnly` included. An explicit
-   * `deny`/`allow`/`ask` rule still applies.
+   * A tool with no path / command specifier: `todo`, `skill`, `task`. Whole-tool
+   * `deny`/`allow`/`ask` rules apply, then the mode default. `skill` and `todo`
+   * pass `readOnly: true` (no workspace effect, so `plan`/`readOnly` allow them);
+   * `task` passes `false` (a custom sub-agent could write, so it is gated like a
+   * write tool — asked by default, denied in `plan`/`readOnly`).
    */
-  private evaluateSkill(): PermissionVerdict {
-    const denied = this.deny.find((r) => r.tool === 'skill');
+  private evaluateWholeTool(tool: string, readOnly: boolean): PermissionVerdict {
+    const denied = this.deny.find((r) => r.tool === tool);
     if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
-    const allowed = this.allow.find((r) => r.tool === 'skill');
+    const allowed = this.allow.find((r) => r.tool === tool);
     if (allowed) return { decision: 'allow' };
-    const asked = this.askRules.find((r) => r.tool === 'skill');
+    const asked = this.askRules.find((r) => r.tool === tool);
     if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
-    return this.modeDefault('skill', true);
+    return this.modeDefault(tool, readOnly);
+  }
+
+  private evaluateSkill(): PermissionVerdict {
+    return this.evaluateWholeTool('skill', true);
   }
 
   private evaluateTodo(): PermissionVerdict {
-    const denied = this.deny.find((r) => r.tool === 'todo');
-    if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
-    const allowed = this.allow.find((r) => r.tool === 'todo');
-    if (allowed) return { decision: 'allow' };
-    const asked = this.askRules.find((r) => r.tool === 'todo');
-    if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
-    return this.modeDefault('todo', true);
+    return this.evaluateWholeTool('todo', true);
   }
 
   private async evaluateBash(input: unknown): Promise<PermissionVerdict> {

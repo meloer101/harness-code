@@ -80,10 +80,51 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
   if (opts.mode === 'plan') {
     segments.push({ id: 'plan_mode', text: PLAN_MODE });
   }
-  segments.push({
-    id: 'environment',
-    text: `Working directory: ${opts.cwd}\nPlatform: ${platform}\n\nPaths in tool calls are resolved against the working directory above unless given as absolute paths.`,
-  });
+  segments.push(environmentSegment(opts.cwd, platform));
   // Enforce the cache-stable order regardless of push order above.
+  return orderSystemSegments(segments);
+}
+
+function environmentSegment(cwd: string, platform: string): SystemSegment {
+  return {
+    id: 'environment',
+    text: `Working directory: ${cwd}\nPlatform: ${platform}\n\nPaths in tool calls are resolved against the working directory above unless given as absolute paths.`,
+  };
+}
+
+export interface BuildSubagentSystemPromptOptions {
+  cwd: string;
+  platform?: string;
+  /** The sub-agent definition's Markdown body — its role instructions. */
+  role: string;
+  /** Concatenated AGENTS.md / CLAUDE.md bodies. Omitted when empty. */
+  projectMemory?: string;
+}
+
+/**
+ * System prompt for a dispatched sub-agent. Same `identity` + `conventions`
+ * prefix as the main agent (byte-identical, so the prompt cache still hits),
+ * then the sub-agent's role, then project memory and environment. No skills
+ * manifest and no plan-mode overlay — a sub-agent does neither.
+ */
+export function buildSubagentSystemPrompt(opts: BuildSubagentSystemPromptOptions): SystemSegment[] {
+  const platform = opts.platform ?? process.platform;
+  const segments: SystemSegment[] = [
+    { id: 'identity', text: IDENTITY },
+    { id: 'conventions', text: AGENT_CONVENTIONS, cacheBreakpoint: true },
+    {
+      id: 'agent_role',
+      text: `<agent_role>\nYou are a sub-agent dispatched for one self-contained task. Do that task and nothing more. Your final message is the entire report the calling agent receives — make it complete and self-standing, and keep it tight.\n\n${opts.role.trim()}\n</agent_role>`,
+    },
+  ];
+  if (opts.projectMemory && opts.projectMemory.trim() !== '') {
+    segments.push({
+      id: 'project_memory',
+      text:
+        `<project_memory>\nStanding notes the developer left in this project. Treat them as instructions.\n\n` +
+        `${opts.projectMemory}\n</project_memory>`,
+    });
+  }
+  segments.push(environmentSegment(opts.cwd, platform));
   return orderSystemSegments(segments);
 }

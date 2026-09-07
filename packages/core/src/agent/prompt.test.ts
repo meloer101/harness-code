@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SYSTEM_SEGMENT_ORDER } from '../context/cache.js';
-import { buildAgentSystemPrompt } from './prompt.js';
+import { buildAgentSystemPrompt, buildSubagentSystemPrompt } from './prompt.js';
 
 describe('buildAgentSystemPrompt', () => {
   it('orders segments identity, conventions, then environment', () => {
@@ -110,5 +110,44 @@ describe('buildAgentSystemPrompt', () => {
         expect(ranks).not.toContain(-1);
       }
     }
+  });
+});
+
+describe('buildSubagentSystemPrompt', () => {
+  it('places agent_role right after conventions, before environment', () => {
+    const segs = buildSubagentSystemPrompt({ cwd: '/w', platform: 'linux', role: 'search the code' });
+    expect(segs.map((s) => s.id)).toEqual(['identity', 'conventions', 'agent_role', 'environment']);
+    expect(segs.find((s) => s.id === 'agent_role')?.text).toContain('search the code');
+  });
+
+  it('never carries skills or plan-mode segments', () => {
+    const ids = buildSubagentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      role: 'r',
+      projectMemory: 'notes',
+    }).map((s) => s.id);
+    expect(ids).not.toContain('available_skills');
+    expect(ids).not.toContain('plan_mode');
+    expect(ids).toContain('project_memory');
+  });
+
+  it('keeps identity + conventions byte-identical to the main prompt (cache still hits)', () => {
+    const main = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    const sub = buildSubagentSystemPrompt({ cwd: '/w', platform: 'linux', role: 'r' });
+    expect(sub[0]).toEqual(main[0]);
+    expect(sub[1]).toEqual(main[1]);
+  });
+
+  it('emits segments as a subsequence of SYSTEM_SEGMENT_ORDER', () => {
+    const ids = buildSubagentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      role: 'r',
+      projectMemory: 'n',
+    }).map((s) => s.id);
+    const ranks = ids.map((id) => (SYSTEM_SEGMENT_ORDER as readonly string[]).indexOf(id));
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+    expect(ranks).not.toContain(-1);
   });
 });

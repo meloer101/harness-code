@@ -350,7 +350,10 @@ export class AgentLoop {
     const parallel = decisions.filter(({ call, decision }) => {
       if (decision.decision !== 'allow') return false;
       const spec = this.opts.tools.get(call.name);
-      return spec?.readOnly === true && spec.concurrencySafe;
+      // `concurrencySafe` is the contract — a write tool that is unsafe to
+      // interleave declares `false` (all of them currently do). `task` is
+      // concurrency-safe though not read-only, so parallel sub-agents work.
+      return spec?.concurrencySafe === true;
     });
     const serial = decisions.filter((d) => !parallel.includes(d));
 

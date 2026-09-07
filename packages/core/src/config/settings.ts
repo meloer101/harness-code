@@ -34,6 +34,8 @@ export interface Settings extends RouterSettings {
   contextCompactRatio?: number;
   /** Trailing turns kept verbatim through a compaction. Compactor default 3. */
   compactKeepTurns?: number;
+  /** Turn budget for a dispatched sub-agent. Default 20. */
+  subagentMaxTurns?: number;
   permissions?: PermissionConfig;
 }
 

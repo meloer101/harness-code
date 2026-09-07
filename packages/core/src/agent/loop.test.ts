@@ -101,6 +101,28 @@ describe('AgentLoop', () => {
     expect(counter.max).toBe(2);
   });
 
+  it('runs concurrency-safe tools in parallel even when they are not read-only', async () => {
+    const provider = new ScriptedProvider([
+      {
+        toolCalls: [
+          { name: 'taskA', input: {} },
+          { name: 'taskB', input: {} },
+        ],
+      },
+      { text: 'done' },
+    ]);
+    const counter = { active: 0, max: 0 };
+    const tools = new ToolRegistry([
+      trackingTool({ name: 'taskA', readOnly: false, concurrencySafe: true, activeCounter: counter }),
+      trackingTool({ name: 'taskB', readOnly: false, concurrencySafe: true, activeCounter: counter }),
+    ]);
+    const loop = new AgentLoop({ model: resolvedModel(provider), tools, cwd: '/tmp' });
+
+    await loop.run([userText('hi')]);
+
+    expect(counter.max).toBe(2);
+  });
+
   it('runs write-like tools serially, never overlapping', async () => {
     const provider = new ScriptedProvider([
       {

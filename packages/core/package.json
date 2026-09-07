@@ -12,7 +12,8 @@
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "agents"
   ],
   "scripts": {
     "build": "tsc -b"
