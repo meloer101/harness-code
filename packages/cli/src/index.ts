@@ -149,7 +149,7 @@ program
   .command('raw')
   .description('Send one prompt straight to a model — no tools, no agent loop')
   .argument('<prompt>', 'the prompt to send')
-  .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-chat')
+  .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-v4-flash')
   .option('--no-stream', 'wait for the whole response instead of streaming')
   .option('--json', 'print the raw response object instead of text')
   .action(async (prompt: string, opts: { model?: string; stream: boolean; json?: boolean }) => {
@@ -225,7 +225,7 @@ program
       'Omit <prompt> to start an interactive session — this is also what bare `hc` runs.',
   )
   .argument('[prompt]', 'the task to hand to the agent; omit to start an interactive session')
-  .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-chat')
+  .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-v4-flash')
   .option('--cwd <dir>', 'workspace root the agent operates in', process.cwd())
   .option('--max-turns <n>', 'stop after this many turns', (v) => parseInt(v, 10))
   .option('--max-cost <usd>', 'stop once estimated cost exceeds this', (v) => parseFloat(v))

@@ -68,18 +68,20 @@ const RULES: CapabilityRule[] = [
   // `deepseek-v4-flash`/`deepseek-v4-pro`; thinking is now an effort level
   // (low/high/max) on the same model id rather than a separate reasoning-only
   // model, so both get `reasoning: true` here instead of only one of them.
-  // Pricing is DeepSeek's peak-hour rate (the conservative, higher figure —
-  // off-peak is roughly half) as a best-effort placeholder pending
-  // confirmation against DeepSeek's own pricing page; cached-input rates are
-  // an estimate carried over from the prior generation's cache-to-input
-  // ratio, not independently confirmed.
+  // Context window (1M) and max output (384K) are DeepSeek's published V4
+  // figures — 1M context is the default across all official services. Pricing
+  // is DeepSeek's peak-hour rate (the conservative, higher figure — off-peak is
+  // roughly half) as a best-effort placeholder pending confirmation against
+  // DeepSeek's own pricing page; cached-input rates are an estimate carried
+  // over from the prior generation's cache-to-input ratio, not independently
+  // confirmed.
   {
     provider: 'deepseek',
     match: /^deepseek-v4-pro/i,
     caps: {
       reasoning: true,
-      contextWindow: 128_000,
-      maxOutputTokens: 64_000,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 384_000,
       promptCache: 'implicit',
       pricing: { inputPerMTok: 1.32, outputPerMTok: 3.96, cachedInputPerMTok: 0.33 },
     },
@@ -89,8 +91,8 @@ const RULES: CapabilityRule[] = [
     match: /^deepseek-v4-flash/i,
     caps: {
       reasoning: true,
-      contextWindow: 128_000,
-      maxOutputTokens: 64_000,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 384_000,
       promptCache: 'implicit',
       jsonMode: true,
       pricing: { inputPerMTok: 0.44, outputPerMTok: 1.32, cachedInputPerMTok: 0.11 },

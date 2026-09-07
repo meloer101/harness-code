@@ -106,6 +106,14 @@ const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_CONTEXT_WARN_RATIO = 0.8;
 const DEFAULT_CONTEXT_COMPACT_RATIO = 0.92;
 const DEFAULT_CONTEXT_STOP_RATIO = 0.95;
+/**
+ * Headroom kept free for this turn's output when sizing the usable window.
+ * Separate from `maxOutputTokens` (the per-request cap): a model may allow a
+ * 384k response, but reserving that much would waste most of a 1M window on
+ * output we almost never generate. A turn that legitimately needs a longer
+ * reply still gets it — this only bounds the *reservation*.
+ */
+const OUTPUT_RESERVE_CEILING = 64_000;
 
 interface Decision {
   call: ToolUseBlock;
@@ -139,11 +147,15 @@ export class AgentLoop {
     let costUSD = 0;
     let turn = 0;
 
-    // Usable window: the whole context minus the space we reserve for this
+    // Usable window: the whole context minus the headroom we reserve for this
     // turn's output. `contextWindow` is always populated (DEFAULT_CAPABILITIES).
+    // The reservation is capped at OUTPUT_RESERVE_CEILING so a model with a huge
+    // `maxOutputTokens` (e.g. DeepSeek V4's 384k) does not shrink the window by
+    // output it will almost never produce.
+    const outputReserve = Math.min(this.maxOutputTokens, OUTPUT_RESERVE_CEILING);
     const availableWindow = Math.max(
       1,
-      this.opts.model.capabilities.contextWindow - this.maxOutputTokens,
+      this.opts.model.capabilities.contextWindow - outputReserve,
     );
     // The fixed buckets — system / project memory / tool schemas — don't change
     // within a run, so cost them once. `history` is then the remainder of the

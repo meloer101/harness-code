@@ -40,7 +40,7 @@ export interface Settings extends RouterSettings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  model: 'deepseek/deepseek-chat',
+  model: 'deepseek/deepseek-v4-flash',
   maxTurns: 50,
   temperature: 0,
   permissions: {

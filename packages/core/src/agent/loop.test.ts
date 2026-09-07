@@ -289,6 +289,25 @@ describe('AgentLoop', () => {
     expect(provider.callCount).toBe(0);
   });
 
+  it('caps the output reservation so a huge maxOutputTokens does not shrink the window', async () => {
+    const provider = new ScriptedProvider([{ text: 'done' }]);
+    const seen: number[] = [];
+    const loop = new AgentLoop({
+      // 1M window, model allows a 384k reply — but the reservation is capped at
+      // 64k, so the usable window is ~936k, not ~616k.
+      model: resolvedModel(provider, { contextWindow: 1_000_000, maxOutputTokens: 384_000 }),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      onEvent: (e) => {
+        if (e.type === 'context') seen.push(e.windowTokens);
+      },
+    });
+
+    await loop.run([userText('hi')]);
+
+    expect(seen[0]).toBe(1_000_000 - 64_000);
+  });
+
   it('calls onContextPressure with the ratio once the warn threshold is crossed', async () => {
     const provider = new ScriptedProvider([{ text: 'done' }]);
     const tools = new ToolRegistry([]);
