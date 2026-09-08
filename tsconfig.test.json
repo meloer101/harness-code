@@ -11,6 +11,7 @@
   },
   "include": [
     "packages/*/src/**/*.test.ts",
+    "packages/*/src/**/*.test.tsx",
     "packages/*/test/**/*.ts",
     "evals/src/**/*.test.ts",
     "vitest.config.ts"

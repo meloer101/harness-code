@@ -17,6 +17,16 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@harness-code/core": "workspace:*"
+    "@harness-code/core": "workspace:*",
+    "@inkjs/ui": "^2.0.0",
+    "cli-truncate": "^6.1.1",
+    "ink": "^7.1.1",
+    "marked": "^18.0.12",
+    "react": "^19.2.8",
+    "string-width": "^8.2.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "ink-testing-library": "^4.0.0"
   }
 }
