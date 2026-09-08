@@ -1,0 +1,14 @@
+{
+  "id": "add-slug-helper",
+  "prompt": "Implement the slugify function in src/slug.js so the whole test suite passes (run it with `npm test`). Do not change the tests.",
+  "model": "deepseek/deepseek-v4-flash",
+  "mode": "acceptEdits",
+  "tags": [
+    "feature"
+  ],
+  "runs": 3,
+  "allow": [
+    "Bash(npm:*)",
+    "Bash(node:*)"
+  ]
+}

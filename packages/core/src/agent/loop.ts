@@ -62,10 +62,56 @@ export type AgentEvent =
   | { type: 'compaction'; tokensBefore: number; tokensAfter: number; keptTurns: number }
   | { type: 'stop'; reason: AgentStopReason };
 
+/**
+ * Where per-turn telemetry goes. The loop hands over rich objects at the same
+ * points it feeds `recorder`; shaping them into on-disk trace events (capping
+ * input summaries, byte counts) is the sink's job. Every method is awaited, so a
+ * crash loses at most the in-flight turn — same contract as `SessionRecorder`.
+ * `TraceRecorder` in `telemetry/trace.ts` is the implementation.
+ */
+export interface TraceSink {
+  modelCall(r: {
+    turn: number;
+    model: string;
+    usage: Usage;
+    costUSD?: number;
+    latencyMs?: number;
+    ttftMs?: number;
+    stopReason: string;
+  }): Promise<void>;
+  toolCall(r: {
+    turn: number;
+    id: string;
+    name: string;
+    input: unknown;
+    durationMs: number;
+    result: ToolResult;
+    /** The permission engine refused this call — it never ran. */
+    denied: boolean;
+  }): Promise<void>;
+  compaction(r: {
+    turn: number;
+    tokensBefore: number;
+    tokensAfter: number;
+    keptTurns: number;
+    costUSD?: number;
+  }): Promise<void>;
+  context(r: {
+    turn: number;
+    usedTokens: number;
+    windowTokens: number;
+    ratio: number;
+    breakdown: ContextBreakdown;
+  }): Promise<void>;
+  error(r: { turn: number; scope: 'provider' | 'tool'; message: string }): Promise<void>;
+}
+
 export interface AgentRunResult {
   messages: Message[];
   usage: Usage;
   stopReason: AgentStopReason;
+  /** Model calls that completed before the loop stopped. */
+  turns: number;
 }
 
 export interface AgentLoopOptions {
@@ -75,6 +121,8 @@ export interface AgentLoopOptions {
   system?: SystemSegment[];
   session?: SessionState;
   recorder?: SessionRecorder;
+  /** Per-turn telemetry. Absent = no trace written. */
+  trace?: TraceSink;
   hooks?: AgentHooks;
   maxTurns?: number;
   maxCostUSD?: number;
@@ -146,6 +194,7 @@ export class AgentLoop {
     let usage = emptyUsage();
     let costUSD = 0;
     let turn = 0;
+    let completedTurns = 0;
 
     // Usable window: the whole context minus the headroom we reserve for this
     // turn's output. `contextWindow` is always populated (DEFAULT_CAPABILITIES).
@@ -172,10 +221,10 @@ export class AgentLoop {
 
     for (;;) {
       turn++;
-      if (this.opts.signal?.aborted) return this.stop(messages, usage, 'aborted');
-      if (turn > this.maxTurns) return this.stop(messages, usage, 'max_turns');
+      if (this.opts.signal?.aborted) return this.stop(messages, usage, completedTurns, 'aborted');
+      if (turn > this.maxTurns) return this.stop(messages, usage, completedTurns, 'max_turns');
       if (this.opts.maxCostUSD !== undefined && costUSD > this.opts.maxCostUSD) {
-        return this.stop(messages, usage, 'max_cost');
+        return this.stop(messages, usage, completedTurns, 'max_cost');
       }
 
       const turnCtx: TurnContext = {
@@ -199,7 +248,7 @@ export class AgentLoop {
         this.opts.maxTokens !== undefined &&
         usage.inputTokens + usage.outputTokens > this.opts.maxTokens
       ) {
-        return this.stop(messages, usage, 'max_tokens');
+        return this.stop(messages, usage, completedTurns, 'max_tokens');
       }
 
       let contextTokens =
@@ -222,39 +271,59 @@ export class AgentLoop {
           const before = contextTokens;
           messages.length = 0;
           messages.push(...compacted.messages);
+          let compactionCostUSD: number | undefined;
           if (compacted.usage) {
             usage = addUsage(usage, compacted.usage);
             const pricing = this.opts.model.capabilities.pricing;
-            if (pricing) costUSD += estimateCostUSD(compacted.usage, pricing) ?? 0;
+            if (pricing) {
+              compactionCostUSD = estimateCostUSD(compacted.usage, pricing);
+              costUSD += compactionCostUSD ?? 0;
+            }
           }
           prevUsage = undefined;
           appendedTokens = 0;
           contextTokens = estimateRequestTokens({ ...request, messages });
           ratio = contextTokens / availableWindow;
+          const keptTurns = compacted.keptTurns ?? 0;
           this.emit({
             type: 'compaction',
             tokensBefore: before,
             tokensAfter: contextTokens,
-            keptTurns: compacted.keptTurns ?? 0,
+            keptTurns,
           });
           await this.opts.recorder?.recordCompaction([...messages], {
             tokensBefore: before,
             tokensAfter: contextTokens,
-            keptTurns: compacted.keptTurns ?? 0,
+            keptTurns,
+          });
+          await this.opts.trace?.compaction({
+            turn,
+            tokensBefore: before,
+            tokensAfter: contextTokens,
+            keptTurns,
+            ...(compactionCostUSD !== undefined ? { costUSD: compactionCostUSD } : {}),
           });
         }
       }
 
+      const breakdown = breakdownFrom(stableParts, contextTokens);
       this.emit({
         type: 'context',
         usedTokens: contextTokens,
         windowTokens: availableWindow,
         ratio,
-        breakdown: breakdownFrom(stableParts, contextTokens),
+        breakdown,
+      });
+      await this.opts.trace?.context({
+        turn,
+        usedTokens: contextTokens,
+        windowTokens: availableWindow,
+        ratio,
+        breakdown,
       });
 
       if (ratio >= this.contextStopRatio) {
-        return this.stop(messages, usage, 'context_limit');
+        return this.stop(messages, usage, completedTurns, 'context_limit');
       }
       if (ratio >= this.contextWarnRatio) {
         await this.hooks.onContextPressure?.(turnCtx, {
@@ -269,22 +338,38 @@ export class AgentLoop {
         response = await this.streamTurn(request);
       } catch (err) {
         if (err instanceof ProviderError && err.kind === 'aborted') {
-          return this.stop(messages, usage, 'aborted');
+          return this.stop(messages, usage, completedTurns, 'aborted');
         }
+        await this.opts.trace?.error({
+          turn,
+          scope: 'provider',
+          message: err instanceof Error ? err.message : String(err),
+        });
         throw err;
       }
 
       usage = addUsage(usage, response.usage);
       const pricing = this.opts.model.capabilities.pricing;
-      if (pricing) costUSD += estimateCostUSD(response.usage, pricing) ?? 0;
+      const callCostUSD = pricing ? estimateCostUSD(response.usage, pricing) : undefined;
+      if (callCostUSD !== undefined) costUSD += callCostUSD;
       this.emit({ type: 'turn_end', usage: response.usage });
+      completedTurns++;
+      await this.opts.trace?.modelCall({
+        turn,
+        model: this.opts.model.ref,
+        usage: response.usage,
+        ...(callCostUSD !== undefined ? { costUSD: callCostUSD } : {}),
+        ...(response.latencyMs !== undefined ? { latencyMs: response.latencyMs } : {}),
+        ...(response.ttftMs !== undefined ? { ttftMs: response.ttftMs } : {}),
+        stopReason: response.stopReason,
+      });
 
       const assistantMessage: Message = { role: 'assistant', content: response.content };
       messages.push(assistantMessage);
       await this.opts.recorder?.recordMessage(assistantMessage);
 
       if (response.stopReason !== 'tool_use') {
-        return this.stop(messages, usage, 'end_turn');
+        return this.stop(messages, usage, completedTurns, 'end_turn');
       }
 
       const calls = toolUsesOf(response.content);
@@ -293,16 +378,21 @@ export class AgentLoop {
       messages.push(userMessage);
       await this.opts.recorder?.recordMessage(userMessage);
 
-      if (endsRun) return this.stop(messages, usage, 'stopped_by_tool');
+      if (endsRun) return this.stop(messages, usage, completedTurns, 'stopped_by_tool');
 
       prevUsage = response.usage;
       appendedTokens = estimateMessageTokens([userMessage]);
     }
   }
 
-  private stop(messages: Message[], usage: Usage, reason: AgentStopReason): AgentRunResult {
+  private stop(
+    messages: Message[],
+    usage: Usage,
+    turns: number,
+    reason: AgentStopReason,
+  ): AgentRunResult {
     this.emit({ type: 'stop', reason });
-    return { messages, usage, stopReason: reason };
+    return { messages, usage, stopReason: reason, turns };
   }
 
   private emit(event: AgentEvent): void {
@@ -347,7 +437,9 @@ export class AgentLoop {
     const results = new Map<string, ToolResult>();
     const runOne = async ({ call, decision }: Decision): Promise<void> => {
       this.emit({ type: 'tool_call_start', id: call.id, name: call.name, input: call.input });
+      const startedAt = Date.now();
       const result = await this.executeOne(call, decision);
+      const durationMs = Date.now() - startedAt;
       results.set(call.id, result);
       this.emit({ type: 'tool_call_end', id: call.id, name: call.name, result });
       await this.hooks.onAfterToolCall?.(call, result, turnCtx);
@@ -356,6 +448,15 @@ export class AgentLoop {
         name: call.name,
         input: call.input,
         result,
+      });
+      await this.opts.trace?.toolCall({
+        turn: turnCtx.turn,
+        id: call.id,
+        name: call.name,
+        input: call.input,
+        durationMs,
+        result,
+        denied: decision.decision === 'deny',
       });
     };
 

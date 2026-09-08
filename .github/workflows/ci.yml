@@ -30,6 +30,10 @@ jobs:
 
       - run: pnpm test
 
+      # Replays the committed cassettes against the fixture tasks and gates on
+      # the baseline. No network, no credentials — same contract as the tests.
+      - run: pnpm eval
+
       # No network, no credentials: every provider test runs against recorded
       # or synthetic transports. A green CI here means the harness is
       # deterministic, not that someone's API key happened to work.

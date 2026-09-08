@@ -149,8 +149,15 @@ export interface CassetteEntry {
 /**
  * A request fingerprint. Deliberately excludes anything non-deterministic
  * (`signal`, timing) and anything that does not change the model's answer.
+ *
+ * `redact`, when given, is applied to the serialized request before hashing —
+ * the eval harness passes one that rewrites the fixture's absolute workspace
+ * path to a placeholder, so a cassette recorded under one temp dir replays under
+ * another. The `environment` system segment, the paths a model emits in tool
+ * calls, and `grep` output all embed that path; without this the key would
+ * differ on every machine and every run.
  */
-export function requestKey(req: ModelRequest): string {
+export function requestKey(req: ModelRequest, redact?: (s: string) => string): string {
   const normalized = {
     model: req.model,
     system: (req.system ?? []).map((s) => s.text),
@@ -159,18 +166,68 @@ export function requestKey(req: ModelRequest): string {
     toolChoice: req.toolChoice ?? 'auto',
     temperature: req.temperature ?? null,
   };
-  return createHash('sha256').update(stableStringify(normalized)).digest('hex').slice(0, 32);
+  let serialized = stableStringify(normalized);
+  if (redact) serialized = redact(serialized);
+  return createHash('sha256').update(serialized).digest('hex').slice(0, 32);
+}
+
+/** The token a workspace path collapses to in a portable cassette. */
+export const WORKSPACE_SENTINEL = '$HC_WORKSPACE';
+
+/**
+ * Builds a redactor that replaces each of `paths` (longest first, so a nested
+ * path is matched before its parent) with `WORKSPACE_SENTINEL`. Used both for
+ * the request fingerprint and for scrubbing the events a cassette stores.
+ */
+export function pathRedactor(paths: readonly string[]): (s: string) => string {
+  const ordered = [...paths].filter((p) => p.length > 0).sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return (s) => s;
+  return (s) => ordered.reduce((acc, p) => acc.split(p).join(WORKSPACE_SENTINEL), s);
+}
+
+/** The inverse: put a concrete workspace path back where the sentinel was. */
+export function pathExpander(workDir: string): (s: string) => string {
+  if (workDir.length === 0) return (s) => s;
+  return (s) => s.split(WORKSPACE_SENTINEL).join(workDir);
+}
+
+function mapEventStrings(ev: StreamEvent, f: (s: string) => string): StreamEvent {
+  const before = JSON.stringify(ev);
+  const after = f(before);
+  return after === before ? ev : (JSON.parse(after) as StreamEvent);
+}
+
+export interface RecordingOptions {
+  /**
+   * Absolute paths rewritten to the workspace sentinel throughout the cassette —
+   * the key, the note, and every stored event — so the recording is portable.
+   */
+  redactPaths?: readonly string[];
+  /**
+   * Extra normalization applied to the serialized request (and the note) before
+   * it is fingerprinted, on top of the path redaction — for volatile substrings
+   * a real tool leaks into history that would otherwise change the key every
+   * run, e.g. `node --test`'s `duration_ms:` timings. Must match the replay
+   * side's `keyScrub` exactly.
+   */
+  keyScrub?: (s: string) => string;
 }
 
 /** Wraps a live provider and appends every exchange to a cassette file. */
 export class RecordingProvider implements Provider {
   readonly id: string;
+  private readonly redact: (s: string) => string;
+  private readonly keyRedact: (s: string) => string;
 
   constructor(
     private readonly inner: Provider,
     private readonly cassettePath: string,
+    opts: RecordingOptions = {},
   ) {
     this.id = inner.id;
+    this.redact = pathRedactor(opts.redactPaths ?? []);
+    const scrub = opts.keyScrub ?? ((s) => s);
+    this.keyRedact = (s) => scrub(this.redact(s));
   }
 
   async complete(req: ModelRequest): Promise<ModelResponse> {
@@ -183,7 +240,11 @@ export class RecordingProvider implements Provider {
       events.push(ev);
       yield ev;
     }
-    await this.append({ key: requestKey(req), note: summarize(req), events });
+    await this.append({
+      key: requestKey(req, this.keyRedact),
+      note: this.keyRedact(summarize(req)),
+      events: events.map((ev) => mapEventStrings(ev, this.redact)),
+    });
   }
 
   private async append(entry: CassetteEntry): Promise<void> {
@@ -199,6 +260,16 @@ export interface ReplayOptions {
    * eval ends up measuring nothing.
    */
   allowSequentialFallback?: boolean;
+  /**
+   * The workspace path(s) for this replay. The first is substituted back into
+   * every yielded event wherever the recording stored the sentinel (so a tool
+   * call the model made under the old path now points at this run's dir); all of
+   * them are scrubbed from the request before it is fingerprinted, so the key
+   * matches the recording regardless of where it was made.
+   */
+  redactPaths?: readonly string[];
+  /** Extra request normalization before fingerprinting. Must equal what `RecordingProvider` used. */
+  keyScrub?: (s: string) => string;
 }
 
 /** Serves recorded exchanges. Nothing leaves the machine. */
@@ -207,11 +278,17 @@ export class ReplayProvider implements Provider {
   private readonly byKey = new Map<string, CassetteEntry[]>();
   private readonly order: CassetteEntry[] = [];
   private sequentialCursor = 0;
+  private readonly keyRedact: (s: string) => string;
+  private readonly expand: (s: string) => string;
 
   private constructor(
     entries: readonly CassetteEntry[],
     private readonly opts: ReplayOptions,
   ) {
+    const redact = pathRedactor(opts.redactPaths ?? []);
+    const scrub = opts.keyScrub ?? ((s) => s);
+    this.keyRedact = (s) => scrub(redact(s));
+    this.expand = pathExpander(opts.redactPaths?.[0] ?? '');
     for (const entry of entries) {
       this.order.push(entry);
       const bucket = this.byKey.get(entry.key);
@@ -241,7 +318,7 @@ export class ReplayProvider implements Provider {
   }
 
   async *stream(req: ModelRequest): AsyncIterable<StreamEvent> {
-    const key = requestKey(req);
+    const key = requestKey(req, this.keyRedact);
     const bucket = this.byKey.get(key);
     let entry = bucket?.shift();
 
@@ -256,7 +333,7 @@ export class ReplayProvider implements Provider {
       );
     }
 
-    for (const ev of entry.events) yield ev;
+    for (const ev of entry.events) yield mapEventStrings(ev, this.expand);
   }
 }
 

@@ -1,0 +1,14 @@
+{
+  "id": "cover-parse-edge-cases",
+  "prompt": "src/parseRange.js is correct but under-tested. Add tests to test/parseRange.test.mjs covering the three error paths: malformed input, an inverted range (high < low), and the too-wide guard. Keep the existing test. `npm test` must pass.",
+  "model": "deepseek/deepseek-v4-flash",
+  "mode": "acceptEdits",
+  "tags": [
+    "write-tests"
+  ],
+  "runs": 3,
+  "allow": [
+    "Bash(npm:*)",
+    "Bash(node:*)"
+  ]
+}

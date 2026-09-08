@@ -1,0 +1,14 @@
+{
+  "id": "extract-duplication",
+  "prompt": "Both functions in src/format.js repeat the same name-normalization-and-initials logic. Extract that shared logic into one helper function and call it from both. `npm test` must still pass and the files under test/ must not change.",
+  "model": "deepseek/deepseek-v4-flash",
+  "mode": "acceptEdits",
+  "tags": [
+    "refactor"
+  ],
+  "runs": 3,
+  "allow": [
+    "Bash(npm:*)",
+    "Bash(node:*)"
+  ]
+}

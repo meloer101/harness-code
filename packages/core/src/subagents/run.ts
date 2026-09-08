@@ -49,7 +49,6 @@ export interface RunSubagentOptions {
 }
 
 export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
-  let turns = 0;
   const loop = new AgentLoop({
     model: opts.model,
     tools: new ToolRegistry(opts.tools),
@@ -64,10 +63,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       ? { contextCompactRatio: opts.contextCompactRatio }
       : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
-    onEvent: (event) => {
-      if (event.type === 'turn_end') turns++;
-      opts.onEvent?.(event);
-    },
+    ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
   });
 
   const result = await loop.run([userText(opts.prompt)]);
@@ -79,6 +75,6 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     report: report || '(the sub-agent finished without producing a text answer)',
     usage: result.usage,
     stopReason: result.stopReason,
-    turns,
+    turns: result.turns,
   };
 }

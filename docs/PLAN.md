@@ -2,9 +2,10 @@
 
 > 本文件是项目的施工蓝图，与代码同仓库维护。
 >
-> **当前进度：Phase 5 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 + Phase 2 agent loop /
-> 工具集 + Phase 3 权限与沙箱 + Phase 3.5 token 预算/交互确认/Plan Mode + Phase 4 上下文工程 +
-> Phase 5 MCP 接入）。
+> **当前进度：Phase 8 / 10 已完成**（Phase 0 骨架 + Phase 1 provider 兼容层 +
+> Phase 2 agent loop / 工具集 + Phase 3 权限与沙箱 + Phase 3.5 token 预算/交互确认/Plan Mode +
+> Phase 4 上下文工程 + Phase 5 MCP 接入 + Phase 6 Skills + Phase 7 子 Agent +
+> Phase 8 Telemetry + Eval）。剩 Phase 9 CLI/TUI、Phase 10 文档。
 > 每个 Phase 完成后在下方对应小节标注状态，不要事后重写计划本身 ——
 > 计划和实际的偏差本身就是有价值的记录。
 >
@@ -36,6 +37,11 @@
 > | 2026-09-08 | Phase 6：`allowed-tools` 与权限引擎按 specifier 逐调用取交集 | 只做 **注册表层收窄**：`narrowToolSpecs` 按工具名过滤「给模型看到的工具集」，多个激活 skill 取交集，`skill`/`todo` 恒保留；激活状态持续到会话结束。不在权限引擎里按 specifier 判定（如 `Bash(git:*)` 只放行 git 段）—— 引擎自身的 allow/deny 规则仍是那件事的归属地。字段本身在 spec 里也标 experimental，够用即可。 |
 > | 2026-09-08 | Phase 6：上下文降级做「多桶优先级配额器」 | 只做 **manifest token 上界**（`MAX_MANIFEST_TOKENS`，超限的 skill 不进 manifest 但仍可按名加载）+ 断言。渐进式披露落地后，skills 清单是唯一新增的「既可变又可舍」的桶，且天然很小（2 skill ≈ 172 token）；真正的多桶配额器没有更多消费者，不做。 |
 > | 2026-09-07 | Phase 5：MCP 权限默认档 | 与 Claude Code 对齐：`mcp__server__tool`（精确）/ `mcp__server`（整个 server）/ `mcp`（所有 MCP）三种粒度的 allow/ask/deny 规则，无规则时按 `modeDefault(tool, readOnly=false)` —— `ask`/`acceptEdits` 弹问、`plan`/`readOnly` 拒、`yolo` 放行、`deny` 永远赢。engine 里 `mcp__` 前缀在 `KNOWN_TOOLS` 检查前分流到 `evaluateMcp` | MCP 工具是运行时发现的，进不了静态 `KNOWN_TOOLS`；但没有理由让它绕开规则引擎 —— 复用同一套 allow/ask/deny 列表和同一条 `onBeforeToolCall` hook |
+> | 2026-09-08 | Phase 8 一次做完（Telemetry + Eval） | 拆成 **Telemetry（本次）** 与 Eval（下次）。Telemetry 单独可验收、也是 Eval 消融表的数据底座，先跑通。 | Eval 的 fixture / runner / 消融是独立且更大的一块；Telemetry 落地后 Eval 能直接读 trace 出对比数字 |
+> | 2026-09-08 | Phase 8 Telemetry：trace 扩展现有 `sessions/<id>.jsonl` | 独立 **`.agent/traces/<id>.jsonl`**（同 session id）。`packages/core/src/telemetry/`：`trace.ts`（`TraceEvent` 8 型 = run_start/model_call/tool_call/compaction/context/subagent/error/run_end、`TraceRecorder` 逐事件 append、`readTrace` 容忍撕裂尾行、`listTraceIds`）、`aggregate.ts`（`summarizeTrace` / `rollupStats`，纯函数）。`AgentLoop` 加 `trace?: TraceSink`（loop 自己声明的窄接口，`TraceRecorder` 结构满足），在喂 `recorder` 的同点 `await`；`AgentRunResult` 加 `turns`（`runSubagent` 顺手丢掉手数 `turn_end` 计数）。CLI：`--no-trace` + `settings.telemetry.enabled`、`hc trace [id]`（`--json`，缺省取最新）、`hc stats`（`--since` / `--json` / by-model）、`format.ts` 抽出 `fmtTokens`/`printUsage` 等 + `telemetry-view.ts` 渲染。子 Agent = 父 trace 里一条 `subagent` rollup 事件（CLI 在 `deps.run` 里写，`SubagentResult` 已有全部数据），不给子 Agent 单独 trace 文件。工具**输出**不落 trace（只记 `outputBytes` + `isError`）—— session log 已有全文，重复存就是 `docs/grep-output-blowup.md` 那个坑。`AgentEvent` 不动。+17 tests（384 total）。实测：`hc trace` 时间线、`hc stats` by-model、子 Agent token 计入总额、`--no-trace` 不落文件均通过。OTel exporter 仍是 stretch，未做。 | 让 resume 关键路径的 session log 保持精简；trace 承载易变/有损数据（入参摘要、字节数、墙钟）本就不该进 resume；`hc trace` / `hc stats` 读 trace 不碰 `loadSession`。子 Agent rollup 而非独立 trace 与 Phase 7「子 Agent 保持轻量、不写父 session」的既定取舍一致 |
+> | 2026-09-08 | Phase 8 Eval：8–10 个任务，`pnpm eval` 用「mock provider」全绿 | **5 个任务**（`fix-null-deref` / `add-slug-helper` / `extract-duplication` / `cover-parse-edge-cases` / `refuse-exfiltrate-secret`），mock provider = **录制回放 cassette**（不是 `ScriptedProvider`）。新 workspace 包 `evals/`：`harness.ts`（`runAgentTask` = `cli/index.ts` agent 段的 ~80 行无头蒸馏，不抽 CLI —— 后者和 REPL/MCP/prompter 缠死）、`tasks.ts`、`runner.ts`（每任务跑 N 次：`realpath(mkdtemp)` → `cp` fixture → 跑 → 跑 `assert.mjs`）、`report.ts`（`pass@1/@k`、均值、`baseline.json` 回归门：`pass@k` 掉或 token/成本 涨 >15% → exit 1）、`cli.ts`。fixture = 无依赖 `node:test` 项目 + `package.json`（无 git —— 没有任务需要 `git diff`，`.git` 内容还会破坏确定性）。CI 加 `pnpm eval` 一步（回放，无凭据）。消融：只做 **compaction 开/关**一张表（`--ablation compaction`，收窄 window 到 20k 逼出压缩，真实模型跑），子 Agent / native-vs-prompt 只留 `HarnessOptions` 开关。+20 tests（401 total）。 | 8–10 个 fixture + cassette + assert 是独立的大活，5 个先把框架 / runner / 回归门 / 确定性跑通，加任务只是粘贴；ScriptedProvider 测不了「真实模型能不能解」，cassette 才对 |
+> | 2026-09-08 | Phase 8 Eval：cassette 跨机器回放 | `mock.ts` 加 **对称路径变换**：`RecordingProvider` 把录制时 workspace 绝对路径（system prompt `environment` 段、模型在 tool call 里写的路径、`grep` 输出都带）在 cassette 全文 → `$HC_WORKSPACE` 哨兵；`ReplayProvider` yield 事件时哨兵 → 本次 temp 目录（工具能落地），算 key 前再 → 哨兵（命中录制）。外加 `keyScrub`（`node --test` 的 `duration_ms:` 每次不同 → 归一）。`requestKey(req, redact?)` 加可选第二参，`pathRedactor` / `pathExpander` / `WORKSPACE_SENTINEL` 导出。 | fixture 走 `mkdtemp` 随机路径，不做这个 cassette 换台机器（或换一次 run）就全 miss；这本就是 `requestKey`「排除非确定性」该干的事，只是范围扩到路径 |
+> | 2026-09-08 | Phase 8 Eval：拒绝正确率靠 trace | trace 里权限 `deny` 和「工具跑了但报错」长得一样（都只有 `isError`）。给 `tool_call` 事件加 `denied?: boolean`（`AgentLoop.runToolCalls` 里 `decision` 现成的）；`summarizeTrace` 加 `deniedToolCalls`、`rollupStats` 加 `totalDeniedToolCalls`、`hc trace` 渲染成 `denied`。拒绝任务的判定 = `assert.mjs`（禁止的结果没发生），`deniedToolCalls` 只报不闸 —— 文字婉拒和引擎拦截都算对。 | 「拒绝正确率」是 PLAN 明列指标，trace 是指标来源，这个字段小且顺带让 `hc trace` 显示对 |
 
 ---
 
@@ -234,17 +240,20 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 
 ### Phase 8 — 可观测与评测（2.5 天）
 
-**Telemetry** (`telemetry/`)：
-- 每个 session 一份结构化 JSONL trace：每次模型请求/响应、每次工具调用的入参摘要、耗时、token（含缓存命中）、成本、错误。
-- `hc trace <session>` 渲染时间线；`hc stats` 汇总跨 session 的 token/成本/平均 turn 数。
-- OpenTelemetry exporter 作为 stretch。
+> **Telemetry ✅ 已完成（2026-09-08）**，Eval ⬜ 待做。落地见上方偏差记录表 2026-09-08 两行，
+> 细节见 [telemetry.md](./telemetry.md)。
 
-**Eval** (`evals/`)：
-- 任务集：8–10 个真实小任务，每个 = 一个微型 git 仓库 fixture + 任务描述 + 断言脚本（跑测试/检查 diff）。覆盖：修 bug、加特性、重构、写测试、多文件改动、需要用 MCP 工具的任务、需要拒绝的越权任务。
-- Runner：每任务跑 N 次，报告 **pass@1 / pass@k、平均 token、平均成本、平均 turn 数、拒绝正确率**；输出 JSON 基准，与上次结果对比出回归。
-- **消融实验**（简历上最硬的部分）：开/关压缩、开/关子 agent、原生 tool calling vs 提示词降级，各跑一轮出对比表。
+**Telemetry** (`telemetry/`)：✅
+- 每个 session 一份结构化 JSONL trace（`.agent/traces/<id>.jsonl`）：每次模型调用的 token（含缓存命中）/ 成本 / 延迟 / ttft、每次工具调用的入参摘要 + 耗时 + 输出字节数、压缩、子 Agent 派发、provider 错误、每个 run 的收尾。
+- `hc trace [id]` 渲染时间线（缺省取最新，`--json` 出原始事件）；`hc stats` 汇总跨 session 的 token / 成本 / 平均 turn 数 / 缓存命中率 / by-model（`--since` / `--json`）。
+- OpenTelemetry exporter 作为 stretch —— 未做。
 
-**验证**：`pnpm eval` 用 mock provider 全绿且确定性；用真实模型跑一轮生成基准表进 README。
+**Eval** (`evals/`)：✅ 已完成（2026-09-08，见上方偏差表三行 + [eval.md](./eval.md)）
+- 任务集：**5 个**（修 bug / 加特性 / 重构 / 写测试 / 拒绝越权），每个 = fixture 目录（无依赖 `node:test` 项目）+ `task.json` + `assert.mjs` + 录制好的 `cassette.jsonl`。多文件 / 需 MCP / plan mode 留 follow-up。
+- Runner (`evals/src/`)：每任务跑 N 次，报告 **pass@1 / pass@k、平均 token、平均成本、平均 turn 数、拒绝正确率**；`baseline.json` 回归门（`pass@k` 掉或 token/成本涨 >15% → `pnpm eval` exit 1）。CI 加一步 `pnpm eval`（回放，无凭据）。
+- **消融实验**：`--ablation compaction` 出 compaction 开/关对比表（真实模型，进 README）；子 Agent / native-vs-prompt 只留框架开关（`HarnessOptions`），follow-up。
+
+**验证**：`pnpm eval` 回放 cassette 全绿且确定性（CI）；`--record` 用真实模型重录 + 出基准表。已实测跨 temp 目录回放命中、回归门 exit 1、拒绝任务 trace 带 `denied`。
 
 ---
 
@@ -303,5 +312,5 @@ flags：`--model / --mode / --allow / --max-turns / --max-cost / --no-mcp`。
 5. `.mcp.json` 配一个外部 server → 工具出现在清单且可调用；`hc mcp serve` 被 MCP inspector 正确识别
 6. 放一个自定义 skill 到 `.agent/skills/` → 被发现、被按需加载、`allowed-tools` 生效
 7. 跨目录搜索任务触发子 agent，主上下文 token 明显低于不用子 agent 的对照组
-8. `pnpm eval` 出基准表；消融实验三组对比数字齐全
+8. `pnpm eval` 回放 5 个任务全绿、回归门对比 `baseline.json`；`--ablation compaction` 出 compaction 开/关对比表（子 Agent / native-vs-prompt 消融留 follow-up）
 9. `hc trace <id>` 能完整还原一次会话的每步调用与开销

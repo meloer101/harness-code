@@ -36,6 +36,8 @@ export interface Settings extends RouterSettings {
   compactKeepTurns?: number;
   /** Turn budget for a dispatched sub-agent. Default 20. */
   subagentMaxTurns?: number;
+  /** Per-session telemetry trace under `.agent/traces`. Default enabled; `--no-trace` overrides per run. */
+  telemetry?: { enabled?: boolean };
   permissions?: PermissionConfig;
 }
 

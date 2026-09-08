@@ -11,8 +11,9 @@
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo",
-    "hc": "node packages/cli/dist/index.js"
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo evals/dist evals/*.tsbuildinfo *.tsbuildinfo",
+    "hc": "node packages/cli/dist/index.js",
+    "eval": "node evals/dist/cli.js"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

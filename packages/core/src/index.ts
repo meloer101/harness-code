@@ -17,3 +17,4 @@ export * from './skills/index.js';
 export * from './subagents/index.js';
 export * from './agent/index.js';
 export * from './mcp/index.js';
+export * from './telemetry/index.js';

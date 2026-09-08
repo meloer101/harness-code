@@ -23,7 +23,6 @@ import {
   addUsage,
   buildAgentSystemPrompt,
   builtinTools,
-  cacheHitRate,
   createCompactor,
   createPermissionEngine,
   createPermissionHooks,
@@ -50,20 +49,28 @@ import {
   SkillCatalog,
   rebuildSessionState,
   resolveResources,
+  rollupStats,
   serveOverStdio,
+  summarizeTrace,
+  TraceRecorder,
+  listTraceIds,
+  readTrace,
 } from '@harness-code/core';
 import type {
   ActiveSkill,
   AgentControl,
   AgentEvent,
   AskHandler,
-  ContextBreakdown,
   Message,
   ModelRequest,
   PermissionMode,
+  TraceSummary,
   Usage,
 } from '@harness-code/core';
 import { resolveBudgets } from './budgets.js';
+import { cacheSummary, describeStop, fmtBreakdown, fmtTokens, printUsage } from './format.js';
+import type { ContextSnapshot } from './format.js';
+import { renderStats, renderTimeline } from './telemetry-view.js';
 import { createPrompter, interactiveAskHandler } from './prompter.js';
 import type { Prompter } from './prompter.js';
 import { readFileSync } from 'node:fs';
@@ -241,6 +248,7 @@ program
   .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
   .option('--no-skills', 'do not discover or offer skills')
   .option('--no-subagents', 'do not discover sub-agents or offer the task tool')
+  .option('--no-trace', 'do not write a telemetry trace under .agent/traces for this run')
   .action(
     async (
       prompt: string | undefined,
@@ -258,6 +266,7 @@ program
         compact: boolean;
         skills: boolean;
         subagents: boolean;
+        trace: boolean;
       },
     ) => {
       const cwd = resolvePath(opts.cwd);
@@ -345,6 +354,10 @@ program
 
       const agentDir = join(await findProjectRoot(cwd), AGENT_DIR);
       const recorder = new SessionRecorder(agentDir, opts.resume);
+      // Telemetry trace: on by default, off with --no-trace or settings.telemetry.enabled=false.
+      // Same id as the session so `hc trace <id>` / `hc stats` line up with `--resume <id>`.
+      const traceOn = opts.trace !== false && settings.telemetry?.enabled !== false;
+      const trace = traceOn ? new TraceRecorder(agentDir, recorder.id) : undefined;
       const priorMessages = opts.resume ? await loadSession(agentDir, opts.resume) : [];
       // Resuming replays the read ledger too, not just the messages — otherwise a file
       // read in the prior run looks unread to this one, and the first edit attempt
@@ -522,6 +535,18 @@ program
                     `${fmtTokens(result.usage.inputTokens + result.usage.outputTokens)} tokens)\x1b[0m\n`,
                 );
                 sessionUsage = sessionUsage ? addUsage(sessionUsage, result.usage) : result.usage;
+                await trace?.append({
+                  type: 'subagent',
+                  ts: Date.now(),
+                  turn: 0,
+                  name: def.name,
+                  turns: result.turns,
+                  inputTokens: result.usage.inputTokens,
+                  outputTokens: result.usage.outputTokens,
+                  cachedInputTokens: result.usage.cachedInputTokens,
+                  ...(result.usage.costUSD !== undefined ? { costUSD: result.usage.costUSD } : {}),
+                  stopReason: result.stopReason,
+                });
                 return result;
               },
             })
@@ -629,6 +654,7 @@ program
             ...(skillCatalog.manifest() ? { skillsManifest: skillCatalog.manifest() } : {}),
           }),
           recorder,
+          ...(trace ? { trace } : {}),
           session,
           hooks,
           control,
@@ -659,7 +685,28 @@ program
             content: [{ type: 'text' as const, text: effectiveText }],
           };
           await recorder.recordMessage(userMessage);
+          const startedAt = Date.now();
+          await trace?.append({
+            type: 'run_start',
+            ts: startedAt,
+            sessionId: recorder.id,
+            model: resolved.ref,
+            cwd,
+            mode: engine.getMode(),
+            resumed: opts.resume !== undefined,
+          });
           const result = await buildLoop(controller.signal).run([...messages, userMessage]);
+          await trace?.append({
+            type: 'run_end',
+            ts: Date.now(),
+            stopReason: result.stopReason,
+            turns: result.turns,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            cachedInputTokens: result.usage.cachedInputTokens,
+            ...(result.usage.costUSD !== undefined ? { costUSD: result.usage.costUSD } : {}),
+            wallMs: Date.now() - startedAt,
+          });
           process.stdout.write('\n');
           printUsage(resolved.ref, result.usage, undefined, undefined, lastContext);
           sessionUsage = sessionUsage ? addUsage(sessionUsage, result.usage) : result.usage;
@@ -918,81 +965,61 @@ program
     console.log(JSON.stringify({ version: VERSION, sources, settings }, null, 2));
   });
 
-interface ContextSnapshot {
-  usedTokens: number;
-  windowTokens: number;
-  ratio: number;
-  breakdown?: ContextBreakdown;
-}
+program
+  .command('trace')
+  .description(
+    'Replay a recorded session as a timeline: every model call and tool call with timing, tokens, and cost',
+  )
+  .argument('[id]', 'session id; defaults to the most recently written trace')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/traces against', process.cwd())
+  .option('--json', 'emit the raw trace events as JSON instead of a timeline')
+  .action(async (id: string | undefined, opts: { cwd: string; json?: boolean }) => {
+    const agentDir = join(await findProjectRoot(resolvePath(opts.cwd)), AGENT_DIR);
+    let resolvedId = id;
+    if (!resolvedId) {
+      const [newest] = await listTraceIds(agentDir);
+      if (!newest) fail('no traces found under .agent/traces');
+      resolvedId = newest.id;
+    }
+    let events;
+    try {
+      events = await readTrace(agentDir, resolvedId);
+    } catch {
+      fail(`no trace for session "${resolvedId}" (looked in ${join(agentDir, 'traces')})`);
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(events, null, 2));
+      return;
+    }
+    console.log(renderTimeline(resolvedId, events));
+  });
 
-/** `sys 2.1k · mem 0.4k · tools 3.0k · hist 6.2k` — the parts of the window. */
-function fmtBreakdown(b: ContextBreakdown): string {
-  return (
-    `sys ${fmtTokens(b.system)}` +
-    (b.skills > 0 ? ` · skl ${fmtTokens(b.skills)}` : '') +
-    (b.projectMemory > 0 ? ` · mem ${fmtTokens(b.projectMemory)}` : '') +
-    ` · tools ${fmtTokens(b.toolSchemas)} · hist ${fmtTokens(b.history)}`
-  );
-}
-
-function printUsage(
-  ref: string,
-  usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number; costUSD?: number; estimated?: boolean },
-  latencyMs?: number,
-  ttftMs?: number,
-  context?: ContextSnapshot,
-): void {
-  const bits = [
-    ref,
-    `in ${usage.inputTokens}`,
-    `out ${usage.outputTokens}`,
-  ];
-  if (usage.cachedInputTokens > 0) {
-    bits.push(`cached ${usage.cachedInputTokens} (${Math.round(cacheHitRate(usage) * 100)}%)`);
-  }
-  if (usage.costUSD !== undefined) bits.push(`$${usage.costUSD.toFixed(5)}`);
-  if (context) {
-    bits.push(
-      `ctx ${fmtTokens(context.usedTokens)}/${fmtTokens(context.windowTokens)} ` +
-        `(${Math.round(context.ratio * 100)}%)`,
-    );
-    if (context.breakdown) bits.push(fmtBreakdown(context.breakdown));
-  }
-  if (ttftMs !== undefined) bits.push(`ttft ${ttftMs}ms`);
-  if (latencyMs !== undefined) bits.push(`total ${latencyMs}ms`);
-  if (usage.estimated) bits.push('(token counts estimated)');
-  process.stderr.write(`\x1b[2m${bits.join('  ·  ')}\x1b[0m\n`);
-}
-
-/** End-of-session prompt-cache line, or '' when nothing was cached. */
-function cacheSummary(usage: Usage | undefined): string {
-  if (!usage || usage.inputTokens === 0 || usage.cachedInputTokens === 0) return '';
-  return ` · cache ${Math.round(cacheHitRate(usage) * 100)}% of ${fmtTokens(usage.inputTokens)} input tokens`;
-}
-
-/** `12345` -> `12.3k`; small counts stay exact. */
-function fmtTokens(n: number): string {
-  if (n < 1000) return String(n);
-  return `${(n / 1000).toFixed(1)}k`;
-}
-
-/** A one-liner explaining why the loop stopped, for the reasons a user should act on. */
-function describeStop(reason: string): string | undefined {
-  switch (reason) {
-    case 'context_limit':
-      return 'stopped: context window nearly full. Start a new session to continue.';
-    case 'max_tokens':
-      return 'stopped: hit the --max-tokens budget (limit triggered after the turn that crossed it, not a hard ceiling).';
-    case 'max_cost':
-      return 'stopped: hit the --max-cost budget (limit triggered after the turn that crossed it, not a hard ceiling).';
-    case 'max_turns':
-      return 'stopped: hit the max-turns budget.';
-    case 'stopped_by_tool':
-      return 'stopped: plan written for review under .agent/plans/ (no interactive approver).';
-    default:
-      return undefined;
-  }
-}
+program
+  .command('stats')
+  .description('Aggregate token usage, cost, and turn counts across every recorded session')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/traces against', process.cwd())
+  .option('--since <date>', 'only sessions started on or after this date (ISO, e.g. 2026-09-01)')
+  .option('--json', 'emit the rollup as JSON')
+  .action(async (opts: { cwd: string; since?: string; json?: boolean }) => {
+    const agentDir = join(await findProjectRoot(resolvePath(opts.cwd)), AGENT_DIR);
+    let sinceMs = 0;
+    if (opts.since !== undefined) {
+      sinceMs = Date.parse(opts.since);
+      if (Number.isNaN(sinceMs)) fail(`--since: "${opts.since}" is not a recognisable date`);
+    }
+    const ids = await listTraceIds(agentDir);
+    const summaries: TraceSummary[] = [];
+    for (const { id } of ids) {
+      try {
+        const s = summarizeTrace(id, await readTrace(agentDir, id));
+        if (s.startedAt >= sinceMs) summaries.push(s);
+      } catch {
+        // Unreadable or partial trace — leave it out of the totals.
+      }
+    }
+    const rollup = rollupStats(summaries);
+    console.log(opts.json ? JSON.stringify(rollup, null, 2) : renderStats(rollup));
+  });
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];

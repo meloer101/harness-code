@@ -18,6 +18,12 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(yaml@2.9.0))
 
+  evals:
+    dependencies:
+      '@harness-code/core':
+        specifier: workspace:*
+        version: link:../packages/core
+
   packages/cli:
     dependencies:
       '@harness-code/core':

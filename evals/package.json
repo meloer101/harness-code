@@ -1,0 +1,13 @@
+{
+  "name": "@harness-code/evals",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "eval": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "@harness-code/core": "workspace:*"
+  }
+}
