@@ -1,4 +1,5 @@
 export * from './types.js';
+export * from './util.js';
 export * from './registry.js';
 export * from './read.js';
 export * from './write.js';

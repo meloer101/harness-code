@@ -194,3 +194,31 @@ export async function rebuildSessionState(
   }
   return session;
 }
+
+/**
+ * Every session id under `.agent/sessions`, with its file mtime, newest first.
+ * Mirrors `listTraceIds` in `telemetry/trace.ts`, for `/resume` and `hc …` lists.
+ */
+export async function listSessionIds(
+  agentDir: string,
+): Promise<{ id: string; mtimeMs: number }[]> {
+  const { readdir, stat: statPath } = await import('node:fs/promises');
+  let names: string[];
+  try {
+    names = await readdir(join(agentDir, SESSIONS_DIR));
+  } catch {
+    return []; // No sessions dir yet.
+  }
+  const out: { id: string; mtimeMs: number }[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    const id = name.slice(0, -'.jsonl'.length);
+    try {
+      const s = await statPath(sessionPath(agentDir, id));
+      out.push({ id, mtimeMs: s.mtimeMs });
+    } catch {
+      // Vanished between readdir and stat — skip.
+    }
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}

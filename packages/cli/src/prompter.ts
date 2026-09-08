@@ -163,13 +163,9 @@ function capitalize(s: string): string {
   return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
-/** One-line summary of what a tool call would do, for the approval prompt. */
-export function describeToolInput(toolName: string, input: unknown): string {
-  const rec = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
-  if (toolName.toLowerCase() === 'bash' && typeof rec.command === 'string') return rec.command;
-  if (typeof rec.path === 'string') return rec.path;
-  return JSON.stringify(input);
-}
+// Re-exported from core (shared with the TUI's tool cards).
+import { describeToolInput } from '@harness-code/core';
+export { describeToolInput } from '@harness-code/core';
 
 export interface InteractiveAskOptions {
   /** Called right before a prompt is shown — used to flush a half-open [thinking] block. */

@@ -38,6 +38,8 @@ export interface Settings extends RouterSettings {
   subagentMaxTurns?: number;
   /** Per-session telemetry trace under `.agent/traces`. Default enabled; `--no-trace` overrides per run. */
   telemetry?: { enabled?: boolean };
+  /** TUI presentation hints. `theme` is a v1 stub: dark is the default, auto/light land later. */
+  tui?: { theme?: 'dark' | 'light' | 'auto' };
   permissions?: PermissionConfig;
 }
 
