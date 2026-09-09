@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-bundle/
 *.tsbuildinfo
 .DS_Store
 .env
@@ -15,3 +16,8 @@ coverage/
 
 # local MCP server config (test / personal)
 .mcp.json
+
+# python bytecode (harbor adapter)
+__pycache__/
+*.pyc
+evals/harbor/.jobs/

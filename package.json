@@ -11,9 +11,10 @@
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo evals/dist evals/*.tsbuildinfo *.tsbuildinfo",
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo evals/dist evals/*.tsbuildinfo *.tsbuildinfo dist-bundle",
     "hc": "node packages/cli/dist/index.js",
-    "eval": "node evals/dist/cli.js"
+    "eval": "node evals/dist/cli.js",
+    "bundle": "node scripts/bundle-hc.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
+    "esbuild": "^0.27.7",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   }

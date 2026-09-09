@@ -1,0 +1,26 @@
+# Terminal-Bench 2.0 subset for the `hc` baseline run.
+# One task id per line; `#` comments and blank lines ignored.
+# Tune this list after the first run — drop anything that needs a toolchain
+# `hc`'s bundle cannot drive, or that is too slow/expensive for a smoke pass.
+#
+# Used by run-subset.sh, which maps each bare name to `-i terminal-bench/<name>`
+# (the dataset namespaces task names under `terminal-bench/`).
+
+cancel-async-tasks
+fix-code-vulnerability
+fix-git
+git-multibranch
+git-leak-recovery
+filter-js-from-html
+break-filter-js-from-html
+log-summary-date-ranges
+count-dataset-tokens
+gcode-to-text
+chess-best-move
+largest-eigenval
+adaptive-rejection-sampler
+distribution-search
+kv-store-grpc
+large-scale-text-editing
+cobol-modernization
+db-wal-recovery
