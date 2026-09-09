@@ -432,6 +432,10 @@ export class AgentLoop {
    * model rarely hits `context_limit`, so nothing pushes it to stop exploring —
    * runs write scratch script after scratch script and only touch the real
    * deliverable near the wall, then get cut off mid-thought at `max_turns`.
+   * The commit-and-verify tier also says to fall back to the simplest working
+   * implementation: without that, "commit to your solution" can dig a run
+   * deeper into a wrong approach (observed: a task where it kept building a
+   * C extension instead of falling back to the one-line library call).
    */
   private turnBudgetNote(turn: number): string | undefined {
     if (!this.turnBudgetHints) return undefined;
@@ -450,7 +454,9 @@ export class AgentLoop {
     if (turn >= Math.ceil(max * 0.8)) {
       return (
         `${head} Stop exploring. Commit to your best solution, apply it to the real target ` +
-        `file(s), verify it once, then finish. Don't start new investigations.`
+        `file(s), verify it once, then finish. Don't start new investigations. If your ` +
+        `current approach keeps failing, fall back to the simplest implementation that ` +
+        `could pass rather than pushing the same approach further.`
       );
     }
     return (

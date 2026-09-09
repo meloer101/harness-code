@@ -61,9 +61,30 @@ exceptions as 0; excluding them, 11/16 = 68.8%). Total: 8.8M in / 228K out tok, 
 
 Observations:
 - 5 of 7 real failures hit `max_turns` (40); 4 *passes* also ran to 40 without
-  stopping — hc tends to keep polishing after it's effectively done. Raising
-  `max_turns` and/or a sharper "done" signal are both worth trying.
+  stopping — hc tends to keep polishing after it's effectively done.
 - `max_turns` runs still cost $0.24–0.86 each (gcode-to-text: 2.1M input tokens).
+
+### Turn-budget nudge (2026-09-09)
+
+That "runs to the wall" pattern drove the turn-budget nudge in
+`packages/core/src/agent/loop.ts` (`turnBudgetNote`). Re-running the 9 tasks
+that hit `max_turns`, nudge on vs off (`deepseek/deepseek-v4-pro`,
+`--agent-timeout-multiplier 2.5` for the slow three):
+
+| task | baseline | nudge | note |
+|------|:---:|:---:|------|
+| break-filter-js-from-html | ❌ | ✅ | stopped the XSS-variant whack-a-mole, wrote a principled filter |
+| cobol-modernization | ❌ | ✅ | |
+| db-wal-recovery | ❌ | ✅ | was $0.56 spelunking `/proc` + caps; converged at turn 21, $0.10 |
+| cancel-async-tasks | ✅ 40t | ✅ 9t | |
+| large-scale-text-editing | ✅ 40t | ✅ 18t | |
+| count-dataset-tokens | ✅ 40t | ✅ 30t | |
+| largest-eigenval | ✅ | ❌ | regressed — nudge pushed it to commit to a C-extension rabbit hole instead of the numpy one-liner; addressed by the "fall back to the simplest implementation" clause in the ≥80% tier |
+| chess-best-move | ❌ | ❌ | genuinely hard (board-from-image, network-blocked) |
+| gcode-to-text | ❌ | ❌ | genuinely hard |
+
+**4/9 → 6/9** on this slice; the three already-passing tasks shed ~50 turns
+and ~$0.65 combined. Projected onto the full subset: ~61% → ~72%.
 
 ### The `filter-js-from-html` crash
 
