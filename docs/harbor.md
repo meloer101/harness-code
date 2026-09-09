@@ -79,12 +79,17 @@ that hit `max_turns`, nudge on vs off (`deepseek/deepseek-v4-pro`,
 | cancel-async-tasks | ✅ 40t | ✅ 9t | |
 | large-scale-text-editing | ✅ 40t | ✅ 18t | |
 | count-dataset-tokens | ✅ 40t | ✅ 30t | |
-| largest-eigenval | ✅ | ❌ | regressed — nudge pushed it to commit to a C-extension rabbit hole instead of the numpy one-liner; addressed by the "fall back to the simplest implementation" clause in the ≥80% tier |
+| largest-eigenval | ✅ | ❌ | **known regression.** A perf-optimisation task: the nudge makes it commit to chasing the fastest approach (C extension, ctypes→LAPACK) and it never falls back to writing a plain `eigen.py`. Adding a "fall back to the simplest implementation" clause to the ≥80% tier did **not** recover it on a re-run — the pull of the optimisation goal wins. |
 | chess-best-move | ❌ | ❌ | genuinely hard (board-from-image, network-blocked) |
 | gcode-to-text | ❌ | ❌ | genuinely hard |
 
-**4/9 → 6/9** on this slice; the three already-passing tasks shed ~50 turns
-and ~$0.65 combined. Projected onto the full subset: ~61% → ~72%.
+**4/9 → 6/9** on this slice (net +2: break-filter / cobol / db-wal flip to
+pass, largest-eigenval flips to fail); the three already-passing tasks shed
+~50 turns and ~$0.65 combined. Projected onto the full subset: ~61% → ~72%.
+
+Run-to-run noise is significant under Rosetta on a loaded machine — db-wal-recovery
+passed at turn 21 on one nudge run and hit Harbor's wall-clock agent timeout on
+another. Treat single-task flips as directional, not exact.
 
 ### The `filter-js-from-html` crash
 
