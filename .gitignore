@@ -21,3 +21,6 @@ coverage/
 __pycache__/
 *.pyc
 evals/harbor/.jobs/
+
+# stray dataset export if `harbor dataset download` is run without --cache
+/terminal-bench-2/
