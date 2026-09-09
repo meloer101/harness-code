@@ -5,6 +5,7 @@ import { DEFAULT_CAPABILITIES } from '../provider/capabilities.js';
 import { ScriptedProvider } from '../provider/mock.js';
 import type { ResolvedModel } from '../provider/router.js';
 import { userText } from '../provider/types.js';
+import type { Message } from '../provider/types.js';
 import type { ToolSpec } from '../tools/types.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { AgentLoop } from './loop.js';
@@ -555,5 +556,106 @@ describe('AgentLoop', () => {
     const result = await loop.run([userText('hi')]);
 
     expect(result.stopReason).toBe('end_turn');
+  });
+
+  describe('turn-budget hints', () => {
+    function budgetNote(req: { messages: readonly Message[] } | undefined): string | undefined {
+      const block = req?.messages
+        .at(-1)
+        ?.content.find(
+          (b): b is { type: 'text'; text: string } =>
+            b.type === 'text' && b.text.startsWith('[turn budget]'),
+        );
+      return block?.text;
+    }
+    function allBudgetNotes(req: { messages: readonly Message[] }): string[] {
+      const notes: string[] = [];
+      for (const m of req.messages) {
+        for (const b of m.content) {
+          if (b.type === 'text' && b.text.startsWith('[turn budget]')) notes.push(b.text);
+        }
+      }
+      return notes;
+    }
+    const sixToolTurns = () =>
+      new ScriptedProvider(
+        Array.from({ length: 6 }, () => ({ toolCalls: [{ name: 'echo', input: {} }] })),
+      );
+    const echoTools = () =>
+      new ToolRegistry([trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true })]);
+
+    it('stays silent before ~60% of the budget, then escalates', async () => {
+      const provider = sixToolTurns();
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        maxTurns: 6,
+      });
+
+      await loop.run([userText('hi')]);
+
+      // turns 1-3: nothing (60% of 6 -> turn 4)
+      expect(budgetNote(provider.requests[0])).toBeUndefined();
+      expect(budgetNote(provider.requests[2])).toBeUndefined();
+      // turn 4: converge
+      expect(budgetNote(provider.requests[3])).toContain('past the two-thirds mark');
+      // turn 5 (>= 80%): commit-and-verify
+      expect(budgetNote(provider.requests[4])).toContain('Stop exploring');
+      // turn 6: final
+      expect(budgetNote(provider.requests[5])).toContain('final turn');
+    });
+
+    it('never persists the note — history stays clean and it does not accumulate', async () => {
+      const provider = sixToolTurns();
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        maxTurns: 6,
+      });
+
+      const result = await loop.run([userText('hi')]);
+
+      // returned history carries no budget note
+      expect(allBudgetNotes({ messages: result.messages })).toEqual([]);
+      // each request carries at most the one note for that turn
+      for (const req of provider.requests) {
+        expect(allBudgetNotes(req).length).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it('is disabled by turnBudgetHints: false', async () => {
+      const provider = sixToolTurns();
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        maxTurns: 6,
+        turnBudgetHints: false,
+      });
+
+      await loop.run([userText('hi')]);
+
+      for (const req of provider.requests) expect(budgetNote(req)).toBeUndefined();
+    });
+
+    it('is disabled for a tiny turn budget', async () => {
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'echo', input: {} }] },
+        { toolCalls: [{ name: 'echo', input: {} }] },
+        { toolCalls: [{ name: 'echo', input: {} }] },
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        maxTurns: 3,
+      });
+
+      await loop.run([userText('hi')]);
+
+      for (const req of provider.requests) expect(budgetNote(req)).toBeUndefined();
+    });
   });
 });

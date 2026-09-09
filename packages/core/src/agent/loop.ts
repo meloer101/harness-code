@@ -125,6 +125,14 @@ export interface AgentLoopOptions {
   trace?: TraceSink;
   hooks?: AgentHooks;
   maxTurns?: number;
+  /**
+   * Past ~60% of `maxTurns`, append a short ephemeral note to the turn's
+   * message telling the model how many turns remain and to converge on a
+   * solution rather than keep exploring. The note is never persisted to
+   * history — it is rebuilt each turn and only present in that turn's request.
+   * Default `true`; set `false` to measure the un-nudged behaviour.
+   */
+  turnBudgetHints?: boolean;
   maxCostUSD?: number;
   /** Stop once cumulative input+output tokens exceed this. */
   maxTokens?: number;
@@ -177,11 +185,13 @@ export class AgentLoop {
   private readonly contextWarnRatio: number;
   private readonly contextCompactRatio: number;
   private readonly contextStopRatio: number;
+  private readonly turnBudgetHints: boolean;
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.hooks = opts.hooks ?? allowAllHooks;
     this.session = opts.session ?? new SessionState();
     this.maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
+    this.turnBudgetHints = opts.turnBudgetHints ?? true;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
     this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
     this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
@@ -243,6 +253,19 @@ export class AgentLoop {
         ...(this.opts.system ? { system: this.opts.system } : {}),
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
+
+      // Ephemeral turn-budget nudge: rebuilt each turn, appended only to this
+      // request's trailing message, never written back to `messages`. Keeps the
+      // cached prefix (system + prior turns) stable while telling the model to
+      // converge as the budget runs low.
+      const budgetNote = this.turnBudgetNote(turn);
+      if (budgetNote && messages.length > 0) {
+        const last = messages[messages.length - 1]!;
+        request.messages = [
+          ...messages.slice(0, -1),
+          { ...last, content: [...last.content, { type: 'text', text: budgetNote }] },
+        ];
+      }
 
       if (
         this.opts.maxTokens !== undefined &&
@@ -399,6 +422,41 @@ export class AgentLoop {
   ): AgentRunResult {
     this.emit({ type: 'stop', reason });
     return { messages, usage, stopReason: reason, turns };
+  }
+
+  /**
+   * The turn-budget nudge for `turn`, or `undefined` before ~60% of the budget
+   * is spent. Escalates: converge → commit-and-verify → last-turn.
+   *
+   * Rationale (from Terminal-Bench traces): with a large context window the
+   * model rarely hits `context_limit`, so nothing pushes it to stop exploring —
+   * runs write scratch script after scratch script and only touch the real
+   * deliverable near the wall, then get cut off mid-thought at `max_turns`.
+   */
+  private turnBudgetNote(turn: number): string | undefined {
+    if (!this.turnBudgetHints) return undefined;
+    const max = this.maxTurns;
+    if (!Number.isFinite(max) || max < 5) return undefined;
+    if (turn < Math.ceil(max * 0.6)) return undefined;
+
+    const remaining = max - turn; // turns left *after* this one
+    const head = `[turn budget] This is turn ${turn} of ${max}; ${remaining} will remain after it.`;
+    if (remaining <= 0) {
+      return (
+        `${head} This is your final turn. Apply your best current solution directly to the ` +
+        `real target file(s) now and stop — do not run more investigation or scratch scripts.`
+      );
+    }
+    if (turn >= Math.ceil(max * 0.8)) {
+      return (
+        `${head} Stop exploring. Commit to your best solution, apply it to the real target ` +
+        `file(s), verify it once, then finish. Don't start new investigations.`
+      );
+    }
+    return (
+      `${head} You are past the two-thirds mark — prefer converging on and implementing a ` +
+      `solution over further investigation or benchmarking.`
+    );
   }
 
   private emit(event: AgentEvent): void {
