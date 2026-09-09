@@ -538,4 +538,14 @@ async function main(): Promise<void> {
   }
 }
 
+// Last-resort net: a stray rejection (e.g. a late timer firing after the run
+// has moved on) should be one readable line and a clean exit code, not a V8
+// stack dump — which for `--output-format json` also means no valid JSON on
+// stdout for the caller to parse.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  process.stderr.write(`\nhc: unhandled rejection: ${msg}\n`);
+  process.exit(1);
+});
+
 void main();

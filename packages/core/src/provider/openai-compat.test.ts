@@ -431,6 +431,104 @@ describe('request shaping', () => {
   });
 });
 
+describe('OpenAICompatProvider timeouts', () => {
+  /** A fetch whose response streams one frame then hangs forever. */
+  function hangingStreamFetch(): typeof fetch {
+    return (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(`data: ${JSON.stringify(delta({ content: 'partial' }))}\n\n`),
+          );
+          // never close, never enqueue again
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  /** A fetch whose body `.json()` never resolves. */
+  function hangingJsonFetch(): typeof fetch {
+    return (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() {
+            /* headers sent; body never arrives */
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof fetch;
+  }
+
+  async function withNoUnhandledRejection<T>(fn: () => Promise<T>): Promise<T> {
+    const seen: unknown[] = [];
+    const onRej = (r: unknown) => seen.push(r);
+    process.on('unhandledRejection', onRej);
+    try {
+      const out = await fn();
+      // let any stray microtask/timer settle
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seen).toEqual([]);
+      return out;
+    } finally {
+      process.off('unhandledRejection', onRej);
+    }
+  }
+
+  it('maps a mid-stream timeout to a retryable ProviderError', async () => {
+    const p = provider(hangingStreamFetch(), {});
+    (p as unknown as { cfg: { timeoutMs: number } }).cfg.timeoutMs = 30;
+
+    const err = await withNoUnhandledRejection(() =>
+      drainStream(p.stream(ask)).catch((e: unknown) => e),
+    );
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).kind).toBe('network');
+    expect((err as ProviderError).retryable).toBe(true);
+  });
+
+  it('maps a non-streaming body timeout to a retryable ProviderError', async () => {
+    const p = provider(hangingJsonFetch(), { streaming: false });
+    (p as unknown as { cfg: { timeoutMs: number } }).cfg.timeoutMs = 30;
+
+    const err = await withNoUnhandledRejection(() =>
+      drainStream(p.stream(ask)).catch((e: unknown) => e),
+    );
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).kind).toBe('network');
+    expect((err as ProviderError).retryable).toBe(true);
+  });
+
+  it('lets an external abort win over the deadline', async () => {
+    const controller = new AbortController();
+    const p = provider(hangingStreamFetch(), {});
+    (p as unknown as { cfg: { timeoutMs: number } }).cfg.timeoutMs = 10_000;
+    setTimeout(() => controller.abort(), 15);
+
+    const err = (await drainStream(p.stream({ ...ask, signal: controller.signal })).catch(
+      (e: unknown) => e,
+    )) as ProviderError;
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.kind).toBe('aborted');
+    expect(err.retryable).toBe(false);
+  });
+
+  it('leaves no timer armed after a normal fast stream', async () => {
+    vi.useFakeTimers();
+    try {
+      const p = provider(sseFetch(sseFrames([delta({ content: 'hi' }, 'stop')])));
+      await drainStream(p.stream(ask));
+      // The request deadline must have been cleared; nothing should be pending.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('vitest sanity', () => {
   it('has fake timers available for later phases', () => {
     expect(vi).toBeDefined();

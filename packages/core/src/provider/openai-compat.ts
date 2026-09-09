@@ -124,12 +124,23 @@ export class OpenAICompatProvider implements Provider {
     const started = Date.now();
     let ttftMs: number | undefined;
 
-    const response = await this.request('/chat/completions', body, req.signal);
+    const { response, dispose, timeoutSignal } = await this.request(
+      '/chat/completions',
+      body,
+      req.signal,
+    );
     if (!response.body) {
+      dispose();
       throw new ProviderError('protocol', 'Streaming response had no body', {
         provider: this.id,
       });
     }
+    // The reader watches both the caller's signal and the request deadline, so
+    // a timeout mid-stream cancels it cleanly instead of surfacing as an
+    // unhandled `TimeoutError`.
+    const readSignal = req.signal
+      ? AbortSignal.any([req.signal, timeoutSignal])
+      : timeoutSignal;
 
     yield { type: 'message_start', model: req.model };
 
@@ -143,67 +154,90 @@ export class OpenAICompatProvider implements Provider {
     let promptToolIndex = 0;
     const promptToolBlocks: ToolUseBlock[] = [];
 
-    for await (const msg of parseSSE(response.body, req.signal)) {
-      if (msg.data === '[DONE]') break;
+    try {
+      for await (const msg of parseSSE(response.body, readSignal)) {
+        if (msg.data === '[DONE]') break;
 
-      const parsed = parseLooseJSON(msg.data);
-      if (!parsed.ok) {
-        // A malformed frame is not worth aborting a long turn over; note it and
-        // keep reading. A truly broken stream fails at the protocol check below.
-        continue;
-      }
-      const chunk = parsed.value as OpenAIStreamChunk;
+        const parsed = parseLooseJSON(msg.data);
+        if (!parsed.ok) {
+          // A malformed frame is not worth aborting a long turn over; note it
+          // and keep reading. A truly broken stream fails the protocol check
+          // below.
+          continue;
+        }
+        const chunk = parsed.value as OpenAIStreamChunk;
 
-      // Some gateways deliver errors inside the SSE stream with HTTP 200.
-      if (chunk.error) {
-        throw mapErrorPayload(chunk.error, this.id, undefined);
-      }
+        // Some gateways deliver errors inside the SSE stream with HTTP 200.
+        if (chunk.error) {
+          throw mapErrorPayload(chunk.error, this.id, undefined);
+        }
 
-      if (chunk.usage) usage = normalizeUsage(chunk.usage);
+        if (chunk.usage) usage = normalizeUsage(chunk.usage);
 
-      const choice = chunk.choices?.[0];
-      if (!choice) continue;
-      sawAnyChunk = true;
-      if (choice.finish_reason) finishReason = choice.finish_reason;
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+        sawAnyChunk = true;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
 
-      const delta = choice.delta ?? {};
+        const delta = choice.delta ?? {};
 
-      // Reasoning channel: DeepSeek uses `reasoning_content`, OpenRouter and a
-      // few others use `reasoning`.
-      const reasoning = delta.reasoning_content ?? delta.reasoning;
-      if (typeof reasoning === 'string' && reasoning !== '') {
-        thinking += reasoning;
-        ttftMs ??= Date.now() - started;
-        yield { type: 'thinking_delta', text: reasoning };
-      }
+        // Reasoning channel: DeepSeek uses `reasoning_content`, OpenRouter and
+        // a few others use `reasoning`.
+        const reasoning = delta.reasoning_content ?? delta.reasoning;
+        if (typeof reasoning === 'string' && reasoning !== '') {
+          thinking += reasoning;
+          ttftMs ??= Date.now() - started;
+          yield { type: 'thinking_delta', text: reasoning };
+        }
 
-      const contentDelta = normalizeContentDelta(delta.content);
-      if (contentDelta !== '') {
-        ttftMs ??= Date.now() - started;
-        if (promptParser) {
-          const out = promptParser.push(contentDelta);
-          if (out.text !== '') {
-            text += out.text;
-            yield { type: 'text_delta', text: out.text };
+        const contentDelta = normalizeContentDelta(delta.content);
+        if (contentDelta !== '') {
+          ttftMs ??= Date.now() - started;
+          if (promptParser) {
+            const out = promptParser.push(contentDelta);
+            if (out.text !== '') {
+              text += out.text;
+              yield { type: 'text_delta', text: out.text };
+            }
+            for (const block of out.calls) {
+              const idx = promptToolIndex++;
+              promptToolBlocks.push(block);
+              yield { type: 'tool_use_start', index: idx, id: block.id, name: block.name };
+              if (block.rawInput)
+                yield { type: 'tool_use_delta', index: idx, argsDelta: block.rawInput };
+              yield { type: 'tool_use_end', index: idx, block };
+            }
+          } else {
+            text += contentDelta;
+            yield { type: 'text_delta', text: contentDelta };
           }
-          for (const block of out.calls) {
-            const idx = promptToolIndex++;
-            promptToolBlocks.push(block);
-            yield { type: 'tool_use_start', index: idx, id: block.id, name: block.name };
-            if (block.rawInput)
-              yield { type: 'tool_use_delta', index: idx, argsDelta: block.rawInput };
-            yield { type: 'tool_use_end', index: idx, block };
-          }
-        } else {
-          text += contentDelta;
-          yield { type: 'text_delta', text: contentDelta };
+        }
+
+        if (delta.tool_calls) {
+          ttftMs ??= Date.now() - started;
+          for (const ev of acc.push(delta.tool_calls)) yield ev;
         }
       }
+    } catch (err) {
+      throw normalizeStreamError(err, req.signal, timeoutSignal, this.id, this.cfg.timeoutMs);
+    } finally {
+      // Stream drained (or failed) — the deadline is no longer needed.
+      dispose();
+    }
 
-      if (delta.tool_calls) {
-        ttftMs ??= Date.now() - started;
-        for (const ev of acc.push(delta.tool_calls)) yield ev;
-      }
+    // `parseSSE` cancels its reader on abort, which ends the loop cleanly rather
+    // than throwing — so an abort/timeout would otherwise surface as a silently
+    // truncated completion. Catch that here.
+    if (req.signal?.aborted || timeoutSignal.aborted) {
+      throw normalizeStreamError(
+        timeoutSignal.aborted && !req.signal?.aborted
+          ? new DOMException('stream deadline', 'TimeoutError')
+          : new DOMException('aborted', 'AbortError'),
+        req.signal,
+        timeoutSignal,
+        this.id,
+        this.cfg.timeoutMs,
+      );
     }
 
     if (promptParser) {
@@ -260,8 +294,19 @@ export class OpenAICompatProvider implements Provider {
     const usePromptTools = !caps.nativeTools && (req.tools?.length ?? 0) > 0;
     const body = this.buildBody(req, caps, false, usePromptTools);
     const started = Date.now();
-    const response = await this.request('/chat/completions', body, req.signal);
-    const json = (await response.json()) as OpenAICompletion;
+    const { response, dispose, timeoutSignal } = await this.request(
+      '/chat/completions',
+      body,
+      req.signal,
+    );
+    let json: OpenAICompletion;
+    try {
+      json = (await abortable(response.json(), timeoutSignal)) as OpenAICompletion;
+    } catch (err) {
+      throw normalizeStreamError(err, req.signal, timeoutSignal, this.id, this.cfg.timeoutMs);
+    } finally {
+      dispose();
+    }
 
     if (json.error) throw mapErrorPayload(json.error, this.id, response.status);
 
@@ -353,7 +398,7 @@ export class OpenAICompatProvider implements Provider {
     path: string,
     body: unknown,
     signal: AbortSignal | undefined,
-  ): Promise<Response> {
+  ): Promise<{ response: Response; dispose: () => void; timeoutSignal: AbortSignal }> {
     const url = `${this.cfg.baseUrl}${path}`;
     const headers: Record<string, string> = {
       'content-type': 'application/json',
@@ -365,8 +410,13 @@ export class OpenAICompatProvider implements Provider {
     let lastError: ProviderError | undefined;
 
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
-      const timeout = AbortSignal.timeout(this.cfg.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+      // A controlled deadline — NOT `AbortSignal.timeout()`, whose timer would
+      // outlive this attempt and, minutes later, fire an uncatchable
+      // `TimeoutError` on a signal nobody is listening to (an unhandled
+      // rejection that takes the process down). `dispose()` clears it the
+      // moment we have a response or an error.
+      const dl = deadline(this.cfg.timeoutMs);
+      const combined = signal ? AbortSignal.any([signal, dl.signal]) : dl.signal;
 
       let res: Response;
       try {
@@ -377,6 +427,7 @@ export class OpenAICompatProvider implements Provider {
           signal: combined,
         });
       } catch (err) {
+        dl.dispose();
         if (signal?.aborted) {
           throw new ProviderError('aborted', 'Request aborted', {
             provider: this.id,
@@ -384,10 +435,15 @@ export class OpenAICompatProvider implements Provider {
             cause: err,
           });
         }
+        // The deadline firing looks like an aborted fetch; classify it as a
+        // retryable network timeout, not a hard abort.
+        const timedOut = isTimeoutError(err) || dl.signal.aborted;
         lastError = new ProviderError(
           'network',
-          `Could not reach ${this.id} at ${this.cfg.baseUrl}: ${errText(err)}`,
-          { provider: this.id, cause: err },
+          timedOut
+            ? `Request to ${this.id} timed out after ${this.cfg.timeoutMs}ms`
+            : `Could not reach ${this.id} at ${this.cfg.baseUrl}: ${errText(err)}`,
+          { provider: this.id, retryable: true, cause: err },
         );
         if (attempt < this.cfg.maxRetries) {
           await sleep(backoffMs(attempt), signal);
@@ -396,8 +452,13 @@ export class OpenAICompatProvider implements Provider {
         throw lastError;
       }
 
-      if (res.ok) return res;
+      if (res.ok) {
+        // Headers are in. The body (JSON parse or SSE read) is the caller's to
+        // consume; hand back the deadline so it stays armed until that is done.
+        return { response: res, dispose: dl.dispose, timeoutSignal: dl.signal };
+      }
 
+      dl.dispose();
       const detail = await safeReadText(res);
       const error = mapHttpError(res.status, detail, this.id);
       if (!error.retryable || attempt === this.cfg.maxRetries) throw error;
@@ -827,6 +888,101 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new ProviderError('aborted', 'Aborted while backing off'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * A timeout signal whose timer is cleared by `dispose()`.
+ *
+ * Deliberately not `AbortSignal.timeout()`: that schedules a timer with no
+ * handle to cancel it, so a request that finishes early leaves a timer that
+ * fires minutes later and aborts a signal nobody listens to — Node reports the
+ * resulting `TimeoutError` as an unhandled rejection and the process exits.
+ */
+function deadline(ms: number): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException(`Timed out after ${ms}ms`, 'TimeoutError'));
+  }, ms);
+  // Don't keep the event loop alive just for the deadline.
+  (timer as { unref?: () => void }).unref?.();
+  let done = false;
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+    },
+  };
+}
+
+function isTimeoutError(err: unknown): boolean {
+  return (
+    err instanceof Error && (err.name === 'TimeoutError' || err.name === 'HeadersTimeoutError')
+  );
+}
+
+/** Reject when `signal` aborts; otherwise settle with `p`. */
+function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Turn whatever escapes a streaming/body read into a `ProviderError` so a slow
+ * or dropped response fails one turn (retryably) instead of crashing the run.
+ */
+function normalizeStreamError(
+  err: unknown,
+  externalSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+  id: string,
+  timeoutMs: number,
+): ProviderError {
+  if (err instanceof ProviderError) return err;
+  if (externalSignal?.aborted) {
+    return new ProviderError('aborted', 'Request aborted', {
+      provider: id,
+      retryable: false,
+      cause: err,
+    });
+  }
+  if (isTimeoutError(err) || timeoutSignal.aborted) {
+    return new ProviderError(
+      'network',
+      `Streaming response from ${id} timed out after ${timeoutMs}ms`,
+      { provider: id, retryable: true, cause: err },
+    );
+  }
+  const name = err instanceof Error ? err.name : '';
+  if (name === 'AbortError') {
+    return new ProviderError('network', `Connection to ${id} dropped mid-stream`, {
+      provider: id,
+      retryable: true,
+      cause: err,
+    });
+  }
+  return new ProviderError('network', `Stream from ${id} failed: ${errText(err)}`, {
+    provider: id,
+    retryable: true,
+    cause: err,
   });
 }
 

@@ -345,7 +345,13 @@ export class AgentLoop {
           scope: 'provider',
           message: err instanceof Error ? err.message : String(err),
         });
-        throw err;
+        // A ProviderError is a known, reportable failure — let it propagate so
+        // the caller can surface it. Anything else escaping the provider (an
+        // unclassified stream/transport error) must not take the process down:
+        // end the run at `error` so `runTurn` returns a result the caller can
+        // inspect, same as any other stop reason.
+        if (err instanceof ProviderError) throw err;
+        return this.stop(messages, usage, completedTurns, 'error');
       }
 
       usage = addUsage(usage, response.usage);
