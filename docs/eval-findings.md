@@ -117,7 +117,7 @@ real and correctly diagnosed.
 All observed on `deepseek-v4-pro`; a stronger model masks several of these but
 the scaffold does nothing to counteract them.
 
-### C1. No "good enough" / stop criterion — **partially mitigated** (turn-budget nudge, commit `aec6d97`)
+### C1. No "good enough" / stop criterion — **addressed** (prompt `<finishing>` block + turn-budget nudge)
 - **Evidence:** pre-nudge, 4 of the 9 tasks that *passed* still ran to the
   40-turn wall (`cancel-async-tasks`, `count-dataset-tokens`,
   `large-scale-text-editing`, `largest-eigenval`) — polishing / re-verifying past
@@ -127,11 +127,16 @@ the scaffold does nothing to counteract them.
   an ephemeral per-turn note ("turn N of M, converge / commit / this is your
   last turn"). Result on the 9-task slice: 4/9 → 6/9, and the already-passing
   tasks shed ~50 turns / ~$0.65 combined.
-- **Still open:** the nudge is a blunt instrument. A real fix is a self-assessed
-  "task complete?" checkpoint (e.g. the model explicitly declares done and
-  verifies once, or a `finish` tool) rather than a time-pressure prompt.
+- **Fix landed:** a `<finishing>` block in `AGENT_CONVENTIONS` (`prompt.ts`) —
+  "reach a working solution, then stop; verify once; make no further tool calls;
+  don't re-verify or polish; if stuck, step back or say so". This is a
+  system-prompt change, so it **invalidates the eval cassettes** — re-record
+  needed (see the note at the end of section C).
+- **Still open:** an explicit `finish` tool (some models use an end-of-task
+  action more reliably than "stop calling tools"). Deferred — add it if a data
+  point shows prompt guidance alone isn't enough.
 
-### C2. Rabbit-holing — goes deeper into one approach instead of re-planning — **open**
+### C2. Rabbit-holing — goes deeper into one approach instead of re-planning — **partially addressed** (step-back nudge)
 - **Evidence:** `break-filter-js-from-html` (endless hand-written XSS variants to
   test its filter), `db-wal-recovery` (spelunking `/proc`, Linux capabilities,
   hand-simulating the SQLite WAL format), `largest-eigenval` (building a C
@@ -141,13 +146,20 @@ the scaffold does nothing to counteract them.
   pass) but **not** when it's committed to one wrong deep approach —
   `largest-eigenval` regressed under the nudge because "commit to your solution"
   entrenched the C-extension path.
-- **Fix direction:** a periodic "step back" hook — after K consecutive tool
-  errors or M turns without editing a task-relevant file, inject a re-plan
-  prompt ("your current approach isn't converging; what's the simplest thing
-  that could pass?"). Or a scaffolded plan step the run can be measured against.
+- **Fix landed:** `loop.ts stallNote()` — after 3 consecutive turns whose every
+  tool call errored, an ephemeral note: "stop retrying variations of the same
+  command; reconsider from the top; what's the simplest thing that would pass;
+  if blocked, say so and stop". Cassette-safe (ephemeral trailing-message
+  injection, same as the turn-budget nudge; the eval fixtures don't trigger it).
+  Also covers most of **C3**.
+- **Still open:** this catches the *all-tool-calls-failed* stall, not the
+  "making tool calls that succeed but aren't progressing" one (e.g.
+  `largest-eigenval` writing bench1..bench9). That needs a progress signal
+  (turns since the deliverable was last touched), which is harder to define
+  generically.
 - **Confidence:** high (consistent across 4+ traces).
 
-### C3. Blind tool retries — **open**
+### C3. Blind tool retries — **partially addressed** (step-back nudge, see C2)
 - **Evidence:** 5–10 tool errors per long run, frequently the *same* command
   with a tweaked flag (`cancel-async-tasks` t31/t32/t35 — three `grep` variants
   on the same file; `largest-eigenval` t38/t39 — repeated failing `gcc`/`python`
@@ -191,6 +203,20 @@ the scaffold does nothing to counteract them.
 
 ---
 
+> **Eval cassettes need re-recording.** The C1 `<finishing>` prompt block changes
+> `AGENT_CONVENTIONS`, which is part of the hashed request key, so all 5 fixture
+> cassettes miss on replay. Until re-recorded, `pnpm eval` fails and
+> `evals/src/harness.test.ts`'s two replay tests fail. Fix once a DeepSeek
+> balance is available:
+> ```
+> pnpm eval --record --update-baseline    # ~$0.10, hits the real model
+> pnpm eval                               # confirm green
+> ```
+> The step-back nudge (C2/C3) is cassette-safe on its own; only the prompt
+> change forces the re-record.
+
+---
+
 ## D. Integration / environment observations (not hc bugs)
 
 ### D1. No native Anthropic API — Claude models only via OpenRouter / a proxy — **open (design)**
@@ -228,9 +254,9 @@ the scaffold does nothing to counteract them.
 
 Roughly, highest leverage first:
 
-1. **C1 done-detection** (proper, not just the time-pressure nudge) + **C2 step-back / re-plan hook** — these two are most of the agentic gap and lift *every* model's score.
-2. **C3 retry discipline** + **C4 scratch-file discipline** — cheap prompt/scaffold changes, remove a lot of wasted turns.
+1. ✅ **C1 done-detection** (`<finishing>` prompt block) + ✅ **C2/C3 step-back nudge** — landed; needs a cassette re-record. These are most of the agentic gap and lift *every* model's score. *Next measurement will tell us how much.*
+2. **C4 scratch-file discipline** + the remaining half of C2 (progress signal, not just all-failed) — cheap prompt/scaffold changes.
 3. **A6 loop-level retry of retryable ProviderErrors** — removes the "one transient blip ends the run" failure.
 4. **B1 headless observability** — not a capability fix, but makes every future eval debuggable without re-running.
 5. **D1 native Anthropic** (or a blessed OpenRouter path) — required before any Claude-model benchmarking.
-6. **C6 simplicity bias** / **D3 nudge regression** — revisit once C1 lands.
+6. **C6 simplicity bias** / **D3 nudge regression** — the `<finishing>` block now says "prefer the simplest approach"; re-check `largest-eigenval` on the next run.

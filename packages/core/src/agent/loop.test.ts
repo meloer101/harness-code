@@ -658,4 +658,99 @@ describe('AgentLoop', () => {
       for (const req of provider.requests) expect(budgetNote(req)).toBeUndefined();
     });
   });
+
+  describe('step-back hints', () => {
+    function stepBackNote(req: { messages: readonly Message[] } | undefined): string | undefined {
+      return req?.messages
+        .at(-1)
+        ?.content.find(
+          (b): b is { type: 'text'; text: string } =>
+            b.type === 'text' && b.text.startsWith('[step back]'),
+        )?.text;
+    }
+    const failTool: ToolSpec<unknown> = {
+      name: 'boom',
+      description: 'always errors',
+      schema: noInput,
+      readOnly: true,
+      concurrencySafe: true,
+      async execute() {
+        return { content: 'nope', isError: true };
+      },
+    };
+    // n failing tool turns, then a text turn so the loop ends cleanly.
+    const nFailTurns = (n: number) =>
+      new ScriptedProvider([
+        ...Array.from({ length: n }, () => ({ toolCalls: [{ name: 'boom', input: {} }] })),
+        { text: 'giving up' },
+      ]);
+
+    it('fires after 3 consecutive all-failed turns', async () => {
+      const provider = nFailTurns(6);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([failTool]),
+        cwd: '/tmp',
+        maxTurns: 30, // high, so the budget note stays out of the way
+      });
+
+      await loop.run([userText('hi')]);
+
+      // turns 1-3 build up the count; the note first appears on turn 4's request
+      expect(stepBackNote(provider.requests[0])).toBeUndefined();
+      expect(stepBackNote(provider.requests[2])).toBeUndefined();
+      expect(stepBackNote(provider.requests[3])).toContain("last 3 turns' tool calls");
+      expect(stepBackNote(provider.requests[4])).toContain("last 4 turns' tool calls");
+    });
+
+    it('resets on a successful tool turn', async () => {
+      // fail, fail, fail, succeed, fail, fail
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'boom', input: {} }] },
+        { toolCalls: [{ name: 'boom', input: {} }] },
+        { toolCalls: [{ name: 'boom', input: {} }] },
+        { toolCalls: [{ name: 'ok', input: {} }] },
+        { toolCalls: [{ name: 'boom', input: {} }] },
+        { toolCalls: [{ name: 'boom', input: {} }] },
+        { text: 'done' },
+      ]);
+      const okTool: ToolSpec<unknown> = {
+        name: 'ok',
+        description: 'succeeds',
+        schema: noInput,
+        readOnly: true,
+        concurrencySafe: true,
+        async execute() {
+          return { content: 'fine' };
+        },
+      };
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([failTool, okTool]),
+        cwd: '/tmp',
+        maxTurns: 30,
+      });
+
+      await loop.run([userText('hi')]);
+
+      expect(stepBackNote(provider.requests[3])).toContain("last 3 turns'"); // before the success
+      expect(stepBackNote(provider.requests[4])).toBeUndefined(); // reset by the success
+      expect(stepBackNote(provider.requests[5])).toBeUndefined(); // only 1 failure since
+    });
+
+    it('is disabled by stepBackHints: false', async () => {
+      const provider = nFailTurns(6);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([failTool]),
+        cwd: '/tmp',
+        maxTurns: 30,
+        stepBackHints: false,
+      });
+
+      await loop.run([userText('hi')]);
+
+      for (const req of provider.requests) expect(stepBackNote(req)).toBeUndefined();
+    });
+  });
 });

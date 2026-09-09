@@ -133,6 +133,13 @@ export interface AgentLoopOptions {
    * Default `true`; set `false` to measure the un-nudged behaviour.
    */
   turnBudgetHints?: boolean;
+  /**
+   * After a run of turns whose tool calls all failed, append an ephemeral
+   * "step back and reconsider" note (same delivery as `turnBudgetHints`). Cuts
+   * the "retry the same failing command with a tweaked flag" loop. Default
+   * `true`.
+   */
+  stepBackHints?: boolean;
   maxCostUSD?: number;
   /** Stop once cumulative input+output tokens exceed this. */
   maxTokens?: number;
@@ -186,12 +193,14 @@ export class AgentLoop {
   private readonly contextCompactRatio: number;
   private readonly contextStopRatio: number;
   private readonly turnBudgetHints: boolean;
+  private readonly stepBackHints: boolean;
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.hooks = opts.hooks ?? allowAllHooks;
     this.session = opts.session ?? new SessionState();
     this.maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     this.turnBudgetHints = opts.turnBudgetHints ?? true;
+    this.stepBackHints = opts.stepBackHints ?? true;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
     this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
     this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
@@ -228,6 +237,8 @@ export class AgentLoop {
     // since — not on a full-history heuristic pass every turn.
     let prevUsage: Usage | undefined;
     let appendedTokens = 0;
+    // Consecutive turns whose every tool call errored — drives the step-back note.
+    let consecutiveFailedTurns = 0;
 
     for (;;) {
       turn++;
@@ -254,16 +265,18 @@ export class AgentLoop {
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
 
-      // Ephemeral turn-budget nudge: rebuilt each turn, appended only to this
-      // request's trailing message, never written back to `messages`. Keeps the
-      // cached prefix (system + prior turns) stable while telling the model to
-      // converge as the budget runs low.
-      const budgetNote = this.turnBudgetNote(turn);
-      if (budgetNote && messages.length > 0) {
+      // Ephemeral nudges (turn budget, step-back-when-stuck): rebuilt each turn,
+      // appended only to this request's trailing message, never written back to
+      // `messages`. Keeps the cached prefix (system + prior turns) stable.
+      const notes = [
+        this.turnBudgetNote(turn),
+        this.stallNote(consecutiveFailedTurns),
+      ].filter((n): n is string => n !== undefined);
+      if (notes.length > 0 && messages.length > 0) {
         const last = messages[messages.length - 1]!;
         request.messages = [
           ...messages.slice(0, -1),
-          { ...last, content: [...last.content, { type: 'text', text: budgetNote }] },
+          { ...last, content: [...last.content, { type: 'text', text: notes.join('\n\n') }] },
         ];
       }
 
@@ -407,6 +420,11 @@ export class AgentLoop {
       messages.push(userMessage);
       await this.opts.recorder?.recordMessage(userMessage);
 
+      // A turn where every tool call errored is a stall; a run of them means the
+      // model is retrying a dead end. Any success resets the counter.
+      const allFailed = blocks.length > 0 && blocks.every((b) => b.isError === true);
+      consecutiveFailedTurns = allFailed ? consecutiveFailedTurns + 1 : 0;
+
       if (endsRun) return this.stop(messages, usage, completedTurns, 'stopped_by_tool');
 
       prevUsage = response.usage;
@@ -462,6 +480,21 @@ export class AgentLoop {
     return (
       `${head} You are past the two-thirds mark — prefer converging on and implementing a ` +
       `solution over further investigation or benchmarking.`
+    );
+  }
+
+  /**
+   * The step-back note once several turns in a row have had every tool call
+   * fail — the signature of retrying a dead end (same command, tweaked flag).
+   */
+  private stallNote(consecutiveFailedTurns: number): string | undefined {
+    if (!this.stepBackHints) return undefined;
+    if (consecutiveFailedTurns < 3) return undefined;
+    return (
+      `[step back] Your last ${consecutiveFailedTurns} turns' tool calls have all failed. ` +
+      `Stop retrying variations of the same command or approach. Reconsider from the top: is ` +
+      `this the right path, and what is the simplest thing that would satisfy the task? If you ` +
+      `are genuinely blocked, say so and stop rather than burning more turns.`
     );
   }
 
