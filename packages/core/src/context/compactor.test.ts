@@ -4,11 +4,14 @@ import { ScriptedProvider } from '../provider/mock.js';
 import type { Message } from '../provider/types.js';
 import {
   COMPACTION_MARKER,
+  PRUNED_TOOL_RESULT_PREFIX,
   compactMessages,
   createCompactor,
   parseGoalAndPriorDigest,
+  pruneToolOutputs,
   splitForCompaction,
 } from './compactor.js';
+import { heuristicTokenCount } from './tokenizer.js';
 
 const goal = (text: string): Message => ({ role: 'user', content: [{ type: 'text', text }] });
 
@@ -166,5 +169,193 @@ describe('createCompactor', () => {
 
     expect(result).toBeUndefined();
     expect(provider.callCount).toBe(0);
+  });
+
+  it('returns a prune-only result when history is too short to summarize', async () => {
+    // Newest result fills the protect window; the older huge one is reclaimed.
+    const big = 'x'.repeat(80_000);
+    const recent = 'r'.repeat(2_000);
+    const msgs: Message[] = [
+      goal('task'),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'c1', name: 'bash', input: {} },
+          { type: 'tool_use', id: 'c2', name: 'bash', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', toolUseId: 'c1', content: big },
+          { type: 'tool_result', toolUseId: 'c2', content: recent },
+        ],
+      },
+    ];
+    const provider = new ScriptedProvider([{ text: 'should not be called' }]);
+    const onCompact = createCompactor({
+      provider,
+      model: 'm',
+      conventions: 'c',
+      keepTurns: 3,
+      pruneProtectTokens: heuristicTokenCount(recent),
+      pruneMinReclaimTokens: 100,
+    });
+
+    const result = await onCompact(msgs, { usedTokens: 1, windowTokens: 1, ratio: 1 }, ctx);
+
+    expect(provider.callCount).toBe(0);
+    expect(result).toBeDefined();
+    const results = result!.messages[2]!.content.filter((b) => b.type === 'tool_result');
+    expect((results[0] as { content: string }).content).toContain(PRUNED_TOOL_RESULT_PREFIX);
+    expect((results[1] as { content: string }).content).toBe(recent);
+  });
+
+  it('feeds a pruned middle to the summarizer', async () => {
+    const big = 'y'.repeat(60_000);
+    const msgs: Message[] = [goal('task')];
+    for (let i = 1; i <= 6; i++) {
+      msgs.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `c${i}`, name: 'bash', input: { i } }],
+      });
+      msgs.push({
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: `c${i}`,
+            // Oldest three are huge; newest three are tiny so the protect
+            // window fills on the newest alone and the big ones get pruned.
+            content: i <= 3 ? big : `small-${i}`,
+          },
+        ],
+      });
+    }
+    const provider = new ScriptedProvider([{ text: 'digest after prune' }]);
+    const onCompact = createCompactor({
+      provider,
+      model: 'm',
+      conventions: 'c',
+      keepTurns: 2,
+      minCompactTokens: 0,
+      // Only the newest tool_result stays; everything older (incl. the huge ones) is pruned.
+      pruneProtectTokens: 1,
+      pruneMinReclaimTokens: 100,
+    });
+
+    const result = await onCompact(msgs, { usedTokens: 1, windowTokens: 1, ratio: 1 }, ctx);
+
+    expect(result).toBeDefined();
+    expect(provider.callCount).toBe(1);
+    const prompt = (provider.requests[0]?.messages[0]?.content[0] as { text: string }).text;
+    expect(prompt).toContain(PRUNED_TOOL_RESULT_PREFIX);
+    expect(prompt).not.toContain(big);
+  });
+});
+
+describe('pruneToolOutputs', () => {
+  it('keeps recent tool outputs and prunes older ones past the protect window', () => {
+    const oldBig = 'a'.repeat(50_000);
+    // Recent alone must fill the protect window so older content is pruned.
+    const recent = 'b'.repeat(5_000);
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'old', name: 'bash', input: {} },
+          { type: 'tool_use', id: 'new', name: 'bash', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', toolUseId: 'old', content: oldBig },
+          { type: 'tool_result', toolUseId: 'new', content: recent },
+        ],
+      },
+    ];
+    const out = pruneToolOutputs(msgs, {
+      protectTokens: heuristicTokenCount(recent),
+      minReclaimTokens: 100,
+    });
+    expect(out.reclaimedTokens).toBeGreaterThan(0);
+    const results = out.messages[2]!.content.filter((b) => b.type === 'tool_result');
+    expect(results[0]).toMatchObject({
+      type: 'tool_result',
+      content: expect.stringContaining(PRUNED_TOOL_RESULT_PREFIX),
+    });
+    expect(results[1]).toMatchObject({ type: 'tool_result', content: recent });
+  });
+
+  it('never prunes protected tools (skill)', () => {
+    const big = 's'.repeat(50_000);
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'sk', name: 'skill', input: { name: 'x' } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'sk', content: big }],
+      },
+    ];
+    const out = pruneToolOutputs(msgs, { protectTokens: 10, minReclaimTokens: 10 });
+    expect(out.reclaimedTokens).toBe(0);
+    expect(out.messages).toBe(msgs);
+  });
+
+  it('leaves history unchanged when reclaimable tokens are below the minimum', () => {
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'bash', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: 'tiny' }],
+      },
+    ];
+    const out = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 20_000 });
+    expect(out.reclaimedTokens).toBe(0);
+    expect(out.messages).toBe(msgs);
+  });
+
+  it('does not re-prune already pruned placeholders', () => {
+    const placeholder = `${PRUNED_TOOL_RESULT_PREFIX} bash, 999 chars] Cleared.`;
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'bash', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: placeholder }],
+      },
+    ];
+    const out = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 1 });
+    expect(out.reclaimedTokens).toBe(0);
+    expect((out.messages[2]!.content[0] as { content: string }).content).toBe(placeholder);
+  });
+
+  it('reports reclaimable tokens roughly matching the cleared content', () => {
+    const body = 'z'.repeat(40_000);
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'read', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: body }],
+      },
+    ];
+    const out = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 100 });
+    expect(out.reclaimedTokens).toBe(heuristicTokenCount(body));
   });
 });

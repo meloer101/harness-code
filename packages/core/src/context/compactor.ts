@@ -29,6 +29,17 @@ export const DEFAULT_KEEP_TURNS = 3;
 export const DEFAULT_MIN_COMPACT_TOKENS = 2000;
 export const DEFAULT_DIGEST_TOKEN_BUDGET = 1800;
 
+/** Recent tool-output tokens kept verbatim when pruning before a full summary. */
+export const DEFAULT_PRUNE_PROTECT_TOKENS = 40_000;
+/** Minimum reclaimable tokens before prune actually rewrites history. */
+export const DEFAULT_PRUNE_MIN_RECLAIM_TOKENS = 20_000;
+/** Tool names whose results are never pruned (e.g. skill manifests). */
+export const DEFAULT_PRUNE_PROTECTED_TOOLS = ['skill'] as const;
+
+/** Marker prefix for a pruned tool_result — also used to skip re-pruning. */
+export const PRUNED_TOOL_RESULT_PREFIX = '[pruned tool output:';
+
+
 // ---------------------------------------------------------------------------
 // Pure splitting / assembly
 // ---------------------------------------------------------------------------
@@ -105,6 +116,113 @@ export function compactMessages(goal: string, digest: string, tail: readonly Mes
 }
 
 // ---------------------------------------------------------------------------
+// Cheap prune: clear old tool outputs before a full LLM summary
+// ---------------------------------------------------------------------------
+
+export interface PruneToolOutputsOptions {
+  /** Recent tool-output tokens kept verbatim. Default 40_000. */
+  protectTokens?: number;
+  /** Skip rewrite when reclaimable tokens are below this. Default 20_000. */
+  minReclaimTokens?: number;
+  /** Tool names whose results are never pruned. Default `['skill']`. */
+  protectedTools?: readonly string[];
+}
+
+export interface PruneToolOutputsResult {
+  messages: Message[];
+  /** Heuristic tokens removed from tool_result bodies (0 ⇒ messages unchanged). */
+  reclaimedTokens: number;
+}
+
+/**
+ * Clear old tool outputs from the recent-past, keeping the newest ~protectTokens
+ * of tool output (and any protected tools) intact. Pure: returns the original
+ * array reference when nothing is worth reclaiming.
+ *
+ * Walks newest → oldest. A tool_result whose cumulative (newest-first) token
+ * count still fits in the protect window is kept; older ones become a short
+ * placeholder. Protected tools (e.g. `skill`) are always kept.
+ */
+export function pruneToolOutputs(
+  messages: readonly Message[],
+  opts: PruneToolOutputsOptions = {},
+): PruneToolOutputsResult {
+  const protectTokens = opts.protectTokens ?? DEFAULT_PRUNE_PROTECT_TOKENS;
+  const minReclaim = opts.minReclaimTokens ?? DEFAULT_PRUNE_MIN_RECLAIM_TOKENS;
+  const protectedTools = new Set(opts.protectedTools ?? DEFAULT_PRUNE_PROTECTED_TOOLS);
+
+  const toolNameById = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    for (const b of msg.content) {
+      if (b.type === 'tool_use') toolNameById.set(b.id, b.name);
+    }
+  }
+
+  // Collect (msgIdx, blockIdx, tokens, toolName) for every tool_result, newest last.
+  type Hit = { msgIdx: number; blockIdx: number; tokens: number; toolName: string; content: string };
+  const hits: Hit[] = [];
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi]!;
+    if (msg.role !== 'user') continue;
+    for (let bi = 0; bi < msg.content.length; bi++) {
+      const b = msg.content[bi]!;
+      if (b.type !== 'tool_result') continue;
+      if (b.content.startsWith(PRUNED_TOOL_RESULT_PREFIX)) continue;
+      const toolName = toolNameById.get(b.toolUseId) ?? 'unknown';
+      hits.push({
+        msgIdx: mi,
+        blockIdx: bi,
+        tokens: heuristicTokenCount(b.content),
+        toolName,
+        content: b.content,
+      });
+    }
+  }
+
+  // Newest → oldest: keep filling the protect window; once full, prune older.
+  let protectedSoFar = 0;
+  const toPrune = new Set<string>(); // `${msgIdx}:${blockIdx}`
+  let reclaimable = 0;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const hit = hits[i]!;
+    const key = `${hit.msgIdx}:${hit.blockIdx}`;
+    if (protectedTools.has(hit.toolName)) continue;
+    if (protectedSoFar >= protectTokens) {
+      toPrune.add(key);
+      reclaimable += hit.tokens;
+      continue;
+    }
+    protectedSoFar += hit.tokens;
+  }
+
+  if (reclaimable < minReclaim || toPrune.size === 0) {
+    return { messages: messages as Message[], reclaimedTokens: 0 };
+  }
+
+  const out: Message[] = messages.map((msg, mi) => {
+    if (msg.role !== 'user') return msg;
+    let changed = false;
+    const content = msg.content.map((b, bi) => {
+      if (b.type !== 'tool_result') return b;
+      if (!toPrune.has(`${mi}:${bi}`)) return b;
+      changed = true;
+      const toolName = toolNameById.get(b.toolUseId) ?? 'unknown';
+      const chars = b.content.length;
+      return {
+        ...b,
+        content:
+          `${PRUNED_TOOL_RESULT_PREFIX} ${toolName}, ${chars} chars] ` +
+          `Cleared to free context. Re-call the tool if you still need the output.`,
+      };
+    });
+    return changed ? { ...msg, content } : msg;
+  });
+
+  return { messages: out, reclaimedTokens: reclaimable };
+}
+
+// ---------------------------------------------------------------------------
 // Digest prompt
 // ---------------------------------------------------------------------------
 
@@ -156,34 +274,66 @@ export interface CompactorOptions {
   keepTurns?: number;
   minCompactTokens?: number;
   digestTokenBudget?: number;
+  /**
+   * Run a free prune of old tool outputs before asking the model for a digest.
+   * Default true — only fires when `onCompact` has already been triggered, so it
+   * does not add an extra prefix-cache invalidation beyond the summary itself.
+   */
+  pruneBeforeSummary?: boolean;
+  pruneProtectTokens?: number;
+  pruneMinReclaimTokens?: number;
+  prunedToolsExempt?: readonly string[];
   /** Called with a one-line reason whenever compaction is skipped (empty middle, failed call). */
   onSkip?(reason: string): void;
 }
 
 /**
- * Build an `onCompact` hook. Splits history, asks the model for a digest, and
- * returns the compacted list. Any failure is swallowed (logged via `onSkip`)
- * and reported as "no compaction" — the loop's `context_limit` stop remains the
- * safety net, so a broken summarizer degrades gracefully instead of killing the
- * session.
+ * Build an `onCompact` hook. Optionally prunes old tool outputs first, then
+ * splits history, asks the model for a digest, and returns the compacted list.
+ * Any failure is swallowed (logged via `onSkip`) and reported as "no compaction"
+ * — the loop's `context_limit` stop remains the safety net, so a broken
+ * summarizer degrades gracefully instead of killing the session.
  */
 export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks['onCompact']> {
   const keepTurns = opts.keepTurns ?? DEFAULT_KEEP_TURNS;
   const minCompactTokens = opts.minCompactTokens ?? DEFAULT_MIN_COMPACT_TOKENS;
   const budget = opts.digestTokenBudget ?? DEFAULT_DIGEST_TOKEN_BUDGET;
+  const pruneBefore = opts.pruneBeforeSummary !== false;
 
   return async (messages, _pressure, ctx) => {
-    const head = messages[0];
+    let working: readonly Message[] = messages;
+    let prunedReclaimed = 0;
+    if (pruneBefore) {
+      const pruned = pruneToolOutputs(messages, {
+        ...(opts.pruneProtectTokens !== undefined
+          ? { protectTokens: opts.pruneProtectTokens }
+          : {}),
+        ...(opts.pruneMinReclaimTokens !== undefined
+          ? { minReclaimTokens: opts.pruneMinReclaimTokens }
+          : {}),
+        ...(opts.prunedToolsExempt !== undefined
+          ? { protectedTools: opts.prunedToolsExempt }
+          : {}),
+      });
+      if (pruned.reclaimedTokens > 0) {
+        working = pruned.messages;
+        prunedReclaimed = pruned.reclaimedTokens;
+      }
+    }
+
+    const head = working[0];
     if (!head) return undefined;
 
-    const split = splitForCompaction(messages, keepTurns);
+    const split = splitForCompaction(working, keepTurns);
     if (!split) {
+      if (prunedReclaimed > 0) return { messages: [...working] };
       opts.onSkip?.('compaction skipped: not enough history to compact');
       return undefined;
     }
 
     const middleText = flattenRequestText({ messages: split.middle });
     if (heuristicTokenCount(middleText) < minCompactTokens) {
+      if (prunedReclaimed > 0) return { messages: [...working] };
       opts.onSkip?.('compaction skipped: compactable history below the minimum');
       return undefined;
     }
@@ -203,6 +353,7 @@ export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks[
       });
       const digest = textOf(res.content).trim();
       if (digest === '') {
+        if (prunedReclaimed > 0) return { messages: [...working] };
         opts.onSkip?.('compaction skipped: summarizer returned nothing');
         return undefined;
       }
@@ -212,6 +363,7 @@ export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks[
         keptTurns: split.keptTurns,
       };
     } catch (err) {
+      if (prunedReclaimed > 0) return { messages: [...working] };
       opts.onSkip?.(`compaction skipped: ${errorMessage(err)}`);
       return undefined;
     }
