@@ -19,7 +19,7 @@ import type {
   Usage,
 } from '@harness-code/core';
 import type { AgentSession } from '@harness-code/core';
-import { describeStop, printUsage } from './format.js';
+import { describeStop, isErrorStop, printUsage } from './format.js';
 import { progressOfEvent, progressOfNotice, usageJSON } from './progress.js';
 import { interactiveAskHandler } from './prompter.js';
 import type { Prompter } from './prompter.js';
@@ -231,7 +231,7 @@ export class JsonSink implements OutputSink {
           this.committed + this.pending,
           this.usage,
           this.context,
-          this.isError || info.isError === true,
+          this.isError || info.isError === true || isErrorStop(info.stopReason),
         ),
       ) + '\n',
     );

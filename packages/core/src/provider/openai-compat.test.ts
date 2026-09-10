@@ -288,6 +288,25 @@ describe('OpenAICompatProvider errors', () => {
     expect(res.content).toEqual([{ type: 'text', text: 'ok' }]);
   });
 
+  it('attaches Retry-After to a rate_limit error when retries are exhausted', async () => {
+    const fetchImpl: typeof fetch = (async () =>
+      new Response('{"error":{"message":"slow down"}}', {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '2' },
+      })) as unknown as typeof fetch;
+    const p = provider(fetchImpl);
+    const err = (await drainStream(p.stream(ask)).catch((e: unknown) => e)) as ProviderError;
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(2000);
+  });
+
+  it('marks a 400 whose message says overloaded as retryable', async () => {
+    const p = provider(jsonFetch({ error: { message: 'The engine is overloaded, try again later' } }, 400));
+    const err = (await drainStream(p.stream(ask)).catch((e: unknown) => e)) as ProviderError;
+    expect(err.kind).toBe('bad_request');
+    expect(err.retryable).toBe(true);
+  });
+
   it('propagates an abort without retrying', async () => {
     const controller = new AbortController();
     const hang: typeof fetch = (async (_u: string, init: RequestInit) => {

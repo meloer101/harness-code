@@ -20,6 +20,20 @@ export interface TurnContext {
 
 export type PermissionDecision = { decision: 'allow' } | { decision: 'deny'; reason: string };
 
+/** What `onAfterToolCall` may append onto the tool_result that goes into history. */
+export interface ToolCallFeedback {
+  appendToResult?: string;
+}
+
+/**
+ * What `onBeforeStop` may return when the model is about to end the run with a
+ * final text answer. A `continue` string is pushed as a new user message and the
+ * loop keeps going (capped per run).
+ */
+export interface StopDecision {
+  continue?: string;
+}
+
 /** What `onContextPressure` / `onCompact` are handed: how full the usable window is this turn. */
 export interface ContextPressure {
   usedTokens: number;
@@ -47,7 +61,17 @@ export interface AgentHooks {
     call: ToolUseBlock,
     result: ToolResult,
     ctx: TurnContext,
-  ): Promise<void> | void;
+  ): Promise<ToolCallFeedback | void> | ToolCallFeedback | void;
+  /**
+   * Fired when the model produced a final text answer (`end_turn`) and the loop
+   * is about to stop. Returning `{ continue }` appends that text as a user
+   * message and keeps the run going (subject to the loop's continuation cap).
+   * Default: no consumer — zero behaviour change unless something plugs in.
+   */
+  onBeforeStop?(
+    finalMessage: Message,
+    ctx: TurnContext,
+  ): Promise<StopDecision | void> | StopDecision | void;
   /**
    * Fired at the top of a turn once the usable context window crosses
    * `contextWarnRatio`. Phase 4's compactor consumes this exact signature to
@@ -74,9 +98,11 @@ export const allowAllHooks: AgentHooks = {
 
 /**
  * Compose several hook sets into one. Void hooks run in order; `onBeforeToolCall`
- * returns the first `deny` (else allow); `onCompact` returns the first result
- * that carries messages. Used by the CLI to stack the permission hooks and the
- * compactor without either knowing about the other.
+ * returns the first `deny` (else allow); `onAfterToolCall` concatenates
+ * `appendToResult` fragments; `onBeforeStop` returns the first `continue`;
+ * `onCompact` returns the first result that carries messages. Used by the CLI
+ * to stack the permission hooks and the compactor without either knowing about
+ * the other.
  */
 export function mergeHooks(...sets: (AgentHooks | undefined)[]): AgentHooks {
   const hooks = sets.filter((h): h is AgentHooks => h !== undefined);
@@ -92,7 +118,19 @@ export function mergeHooks(...sets: (AgentHooks | undefined)[]): AgentHooks {
       return { decision: 'allow' };
     },
     async onAfterToolCall(call, result, ctx) {
-      for (const h of hooks) await h.onAfterToolCall?.(call, result, ctx);
+      const parts: string[] = [];
+      for (const h of hooks) {
+        const fb = await h.onAfterToolCall?.(call, result, ctx);
+        if (fb?.appendToResult) parts.push(fb.appendToResult);
+      }
+      return parts.length > 0 ? { appendToResult: parts.join('\n\n') } : undefined;
+    },
+    async onBeforeStop(finalMessage, ctx) {
+      for (const h of hooks) {
+        const d = await h.onBeforeStop?.(finalMessage, ctx);
+        if (d?.continue) return d;
+      }
+      return undefined;
     },
     async onContextPressure(ctx, pressure) {
       for (const h of hooks) await h.onContextPressure?.(ctx, pressure);

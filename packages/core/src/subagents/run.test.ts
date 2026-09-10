@@ -86,4 +86,21 @@ describe('runSubagent', () => {
     });
     expect(snapshots[0]).toBe(1);
   });
+
+  it('forces a text summary on the final turn instead of another tool call', async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: 'read', input: { path: 'a.ts' } }] },
+      { text: 'Found nothing useful; suggest grepping for TODO next.' },
+    ]);
+    const result = await runSubagent({
+      ...base,
+      model: model(provider),
+      tools: [readSpy([])],
+      prompt: 'explore',
+      maxTurns: 2,
+    });
+    expect(result.stopReason).toBe('end_turn');
+    expect(result.report).toMatch(/Found nothing useful/);
+    expect(provider.requests[1]?.tools).toBeUndefined();
+  });
 });

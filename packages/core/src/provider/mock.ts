@@ -32,7 +32,14 @@ import type {
 export interface ScriptedTurn {
   text?: string;
   thinking?: string;
-  toolCalls?: Array<{ name: string; input: unknown; id?: string }>;
+  toolCalls?: Array<{
+    name: string;
+    input: unknown;
+    id?: string;
+    /** When set, the tool_use block carries this parseError (truncated / bad JSON). */
+    parseError?: string;
+    rawInput?: string;
+  }>;
   stopReason?: StopReason;
   /** Split `text` into this many deltas, to exercise streaming consumers. */
   chunkSize?: number;
@@ -42,7 +49,14 @@ export interface ScriptedTurn {
    * deltas, then throw a `ProviderError` — a stream that died mid-flight.
    * `retryable` defaults to the kind's default.
    */
-  error?: { kind: ProviderErrorKind; message?: string; retryable?: boolean; afterText?: string };
+  error?: {
+    kind: ProviderErrorKind;
+    message?: string;
+    retryable?: boolean;
+    afterText?: string;
+    /** Server-suggested wait; threaded onto the thrown ProviderError. */
+    retryAfterMs?: number;
+  };
 }
 
 /**
@@ -94,6 +108,9 @@ export class ScriptedProvider implements Provider {
       throw new ProviderError(turn.error.kind, turn.error.message ?? `scripted ${turn.error.kind} failure`, {
         provider: this.id,
         ...(turn.error.retryable !== undefined ? { retryable: turn.error.retryable } : {}),
+        ...(turn.error.retryAfterMs !== undefined
+          ? { retryAfterMs: turn.error.retryAfterMs }
+          : {}),
       });
     }
 
@@ -115,7 +132,10 @@ export class ScriptedProvider implements Provider {
         id: call.id ?? `call_${this.cursor}_${index}`,
         name: call.name,
         input: call.input,
-        rawInput: JSON.stringify(call.input),
+        rawInput:
+          call.rawInput ??
+          (call.parseError ? '{incomplete' : JSON.stringify(call.input)),
+        ...(call.parseError ? { parseError: call.parseError } : {}),
       };
       toolBlocks.push(block);
     });

@@ -77,7 +77,12 @@ export function describeStop(reason: string): string | undefined {
     case 'context_limit':
       return 'stopped: context window nearly full. Start a new session to continue.';
     case 'max_tokens':
-      return 'stopped: hit the --max-tokens budget (limit triggered after the turn that crossed it, not a hard ceiling).';
+      return (
+        'stopped: hit a token limit (model output truncated mid-response, or the ' +
+        '--max-tokens budget). The run is incomplete.'
+      );
+    case 'content_filter':
+      return 'stopped: provider content filter blocked the response. The run is incomplete.';
     case 'max_cost':
       return 'stopped: hit the --max-cost budget (limit triggered after the turn that crossed it, not a hard ceiling).';
     case 'max_turns':
@@ -87,4 +92,14 @@ export function describeStop(reason: string): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** Stop reasons that mean the run did not finish cleanly — mark `--json` as `is_error`. */
+export function isErrorStop(reason: string): boolean {
+  return (
+    reason === 'max_tokens' ||
+    reason === 'content_filter' ||
+    reason === 'error' ||
+    reason === 'aborted'
+  );
 }

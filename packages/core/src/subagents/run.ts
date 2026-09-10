@@ -56,6 +56,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     system: opts.system,
     session: new SessionState(),
     hooks: opts.hooks,
+    finalSummaryTurn: true,
     ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
     ...(opts.maxOutputTokens !== undefined ? { maxOutputTokens: opts.maxOutputTokens } : {}),
     ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),

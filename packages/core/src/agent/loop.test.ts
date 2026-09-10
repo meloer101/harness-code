@@ -125,6 +125,42 @@ describe('AgentLoop', () => {
     expect(counter.max).toBe(2);
   });
 
+  it('preserves model order: a write barrier runs before a following read', async () => {
+    const provider = new ScriptedProvider([
+      {
+        toolCalls: [
+          { name: 'edit', input: {} },
+          { name: 'read', input: {} },
+        ],
+      },
+      { text: 'done' },
+    ]);
+    const order: string[] = [];
+    const tools = new ToolRegistry([
+      trackingTool({
+        name: 'edit',
+        readOnly: false,
+        concurrencySafe: false,
+        onRun: () => {
+          order.push('edit');
+        },
+      }),
+      trackingTool({
+        name: 'read',
+        readOnly: true,
+        concurrencySafe: true,
+        onRun: () => {
+          order.push('read');
+        },
+      }),
+    ]);
+    const loop = new AgentLoop({ model: resolvedModel(provider), tools, cwd: '/tmp' });
+
+    await loop.run([userText('hi')]);
+
+    expect(order).toEqual(['edit', 'read']);
+  });
+
   it('runs write-like tools serially, never overlapping', async () => {
     const provider = new ScriptedProvider([
       {
@@ -234,6 +270,69 @@ describe('AgentLoop', () => {
 
     expect(result.stopReason).toBe('max_turns');
     expect(provider.callCount).toBe(2);
+  });
+
+  it('stops with max_tokens when the model truncates a text-only turn', async () => {
+    const provider = new ScriptedProvider([
+      { text: 'half-finished…', stopReason: 'max_tokens' },
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('max_tokens');
+    expect(provider.callCount).toBe(1);
+  });
+
+  it('stops with content_filter when the provider filters the response', async () => {
+    const provider = new ScriptedProvider([
+      { text: '', stopReason: 'content_filter' },
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('content_filter');
+  });
+
+  it('returns an error tool_result and continues when truncation hits mid tool args', async () => {
+    const provider = new ScriptedProvider([
+      {
+        stopReason: 'max_tokens',
+        toolCalls: [
+          {
+            name: 'write',
+            input: {},
+            parseError: 'Unexpected end of JSON input',
+          },
+        ],
+      },
+      { text: 'retried as smaller writes' },
+    ]);
+    const tools = new ToolRegistry([
+      trackingTool({ name: 'write', readOnly: false, concurrencySafe: false }),
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools,
+      cwd: '/tmp',
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('end_turn');
+    expect(provider.callCount).toBe(2);
+    const toolResult = result.messages[2]?.content[0];
+    expect(toolResult).toMatchObject({ type: 'tool_result', isError: true });
+    expect((toolResult as { content: string }).content).toMatch(/output-token limit/i);
   });
 
   it('stops immediately with aborted when the signal is already tripped', async () => {
@@ -425,6 +524,58 @@ describe('AgentLoop', () => {
     expect(result.stopReason).toBe('context_limit');
     expect(compactCalls).toBe(0);
     expect(provider.callCount).toBe(0);
+  });
+
+  it('salvages a context_length provider error by compacting once and re-sending', async () => {
+    const provider = new ScriptedProvider([
+      { error: { kind: 'context_length', message: 'prompt too long', retryable: false } },
+      { text: 'ok after compact' },
+    ]);
+    let compactCalls = 0;
+    const events: string[] = [];
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      // Keep ratio-based compact off so only the salvage path fires.
+      contextCompactRatio: Number.POSITIVE_INFINITY,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onCompact: () => {
+          compactCalls++;
+          return {
+            messages: [userText('compacted')],
+            keptTurns: 1,
+          };
+        },
+      },
+      onEvent: (e) => events.push(e.type),
+    });
+
+    const result = await loop.run([userText('huge history')]);
+
+    expect(result.stopReason).toBe('end_turn');
+    expect(compactCalls).toBe(1);
+    expect(provider.callCount).toBe(2);
+    expect(events).toContain('compaction');
+    expect(result.messages[0]).toEqual(userText('compacted'));
+  });
+
+  it('rethrows context_length when onCompact is absent', async () => {
+    const provider = new ScriptedProvider([
+      { error: { kind: 'context_length', message: 'prompt too long', retryable: false } },
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      hooks: allowAllHooks,
+    });
+
+    await expect(loop.run([userText('hi')])).rejects.toMatchObject({
+      kind: 'context_length',
+    });
+    expect(provider.callCount).toBe(1);
   });
 
   it('emits a context breakdown whose parts sum to the used total', async () => {
@@ -785,6 +936,33 @@ describe('AgentLoop', () => {
       ]);
     });
 
+    it('prefers ProviderError.retryAfterMs over the backoff function', async () => {
+      const provider = new ScriptedProvider([
+        {
+          error: {
+            kind: 'rate_limit',
+            message: 'slow down',
+            retryable: true,
+            retryAfterMs: 1234,
+          },
+        },
+        { text: 'ok' },
+      ]);
+      const events: AgentEvent[] = [];
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        retryBackoffMs: () => 99_999,
+        onEvent: (e) => events.push(e),
+      });
+
+      await loop.run([userText('hi')]);
+
+      const retry = events.find((e) => e.type === 'turn_retry');
+      expect(retry).toMatchObject({ type: 'turn_retry', delayMs: 1234 });
+    });
+
     it('records the retried failure in the trace with willRetry', async () => {
       const provider = new ScriptedProvider([{ error: dropped }, { text: 'ok' }]);
       const errors: unknown[] = [];
@@ -871,5 +1049,99 @@ describe('AgentLoop', () => {
       expect(result.stopReason).toBe('aborted');
       expect(provider.callCount).toBe(1);
     });
+  });
+
+  it('continues once when onBeforeStop returns continue, then ends', async () => {
+    const provider = new ScriptedProvider([
+      { text: 'draft answer' },
+      { text: 'verified answer' },
+    ]);
+    let stopCalls = 0;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onBeforeStop: () => {
+          stopCalls++;
+          if (stopCalls === 1) return { continue: 'Please verify once, then finish.' };
+          return undefined;
+        },
+      },
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('end_turn');
+    expect(provider.callCount).toBe(2);
+    expect(stopCalls).toBe(2);
+    expect(result.messages.some((m) =>
+      m.role === 'user' &&
+      m.content.some((b) => b.type === 'text' && b.text.includes('verify once')),
+    )).toBe(true);
+  });
+
+  it('caps onBeforeStop continuations at maxStopGateContinuations', async () => {
+    const provider = new ScriptedProvider([
+      { text: 'a' },
+      { text: 'b' },
+      { text: 'c' },
+      { text: 'should not reach' },
+    ]);
+    let stopCalls = 0;
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools: new ToolRegistry([]),
+      cwd: '/tmp',
+      maxStopGateContinuations: 2,
+      hooks: {
+        onBeforeToolCall: () => ({ decision: 'allow' }),
+        onBeforeStop: () => {
+          stopCalls++;
+          return { continue: 'keep going' };
+        },
+      },
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    // Initial end_turn + 2 continuations = 3 model calls, then stop despite continue.
+    expect(result.stopReason).toBe('end_turn');
+    expect(provider.callCount).toBe(3);
+    expect(stopCalls).toBe(2);
+  });
+
+  it('omits tools on the final turn when finalSummaryTurn is set', async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: 'echo', input: {} }] },
+      { text: 'here is my summary of what I did' },
+    ]);
+    const tools = new ToolRegistry([
+      trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true }),
+    ]);
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools,
+      cwd: '/tmp',
+      maxTurns: 2,
+      finalSummaryTurn: true,
+      turnBudgetHints: false,
+      stepBackHints: false,
+    });
+
+    const result = await loop.run([userText('hi')]);
+
+    expect(result.stopReason).toBe('end_turn');
+    expect(provider.callCount).toBe(2);
+    expect(provider.requests[0]?.tools).toBeDefined();
+    expect(provider.requests[1]?.tools).toBeUndefined();
+    const lastReq = provider.requests[1]!;
+    const lastText = lastReq.messages
+      .at(-1)
+      ?.content.filter((b) => b.type === 'text')
+      .map((b) => (b as { text: string }).text)
+      .join('');
+    expect(lastText).toMatch(/Tools are disabled/i);
   });
 });

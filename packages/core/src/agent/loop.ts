@@ -22,6 +22,7 @@ import type {
   Message,
   ModelRequest,
   ModelResponse,
+  StopReason,
   SystemSegment,
   ToolResultBlock,
   ToolUseBlock,
@@ -32,7 +33,7 @@ import type { ToolResult } from '../tools/types.js';
 import { errorMessage } from '../tools/util.js';
 import type { ContextBreakdown } from '../context/budget.js';
 import { allowAllHooks } from './hooks.js';
-import type { AgentHooks, PermissionDecision, TurnContext } from './hooks.js';
+import type { AgentHooks, CompactionResult, PermissionDecision, TurnContext } from './hooks.js';
 import type { AgentControl } from './control.js';
 import { SessionState } from './session.js';
 import type { SessionRecorder } from './session.js';
@@ -42,10 +43,22 @@ export type AgentStopReason =
   | 'max_turns'
   | 'max_cost'
   | 'max_tokens'
+  | 'content_filter'
   | 'context_limit'
   | 'stopped_by_tool'
   | 'aborted'
   | 'error';
+
+/** Map a non-tool_use provider stop into an agent stop. Budget `max_tokens` reuses the same name. */
+function agentStopFrom(reason: StopReason): AgentStopReason {
+  if (reason === 'max_tokens') return 'max_tokens';
+  if (reason === 'content_filter') return 'content_filter';
+  return 'end_turn';
+}
+
+const TRUNCATED_TOOL_HINT =
+  'Previous model output hit the output-token limit mid tool-call arguments and could not be parsed. ' +
+  'Split this write into smaller pieces and retry.';
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
@@ -181,6 +194,17 @@ export interface AgentLoopOptions {
   maxTurnRetries?: number;
   /** Delay before turn retry `attempt` (0-based). Defaults to exponential backoff; tests inject 0. */
   retryBackoffMs?: (attempt: number) => number;
+  /**
+   * Cap on how many times `onBeforeStop` may push a continuation and keep the
+   * run going. Default 2. Only relevant when a hook implements `onBeforeStop`.
+   */
+  maxStopGateContinuations?: number;
+  /**
+   * On the final turn (`turn >= maxTurns`), omit tools and ask for a text
+   * summary instead of letting the model burn the last turn on another tool
+   * call. Intended for sub-agents; main agent default is off.
+   */
+  finalSummaryTurn?: boolean;
   signal?: AbortSignal;
   /** Passed through to every tool's `ctx.control`. */
   control?: AgentControl;
@@ -190,6 +214,7 @@ export interface AgentLoopOptions {
 const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_MAX_TURN_RETRIES = 2;
+const DEFAULT_MAX_STOP_GATE_CONTINUATIONS = 2;
 const DEFAULT_CONTEXT_WARN_RATIO = 0.8;
 const DEFAULT_CONTEXT_COMPACT_RATIO = 0.92;
 const DEFAULT_CONTEXT_STOP_RATIO = 0.95;
@@ -219,6 +244,8 @@ export class AgentLoop {
   private readonly turnBudgetHints: boolean;
   private readonly stepBackHints: boolean;
   private readonly maxTurnRetries: number;
+  private readonly maxStopGateContinuations: number;
+  private readonly finalSummaryTurn: boolean;
   private readonly retryBackoffMs: (attempt: number) => number;
 
   constructor(private readonly opts: AgentLoopOptions) {
@@ -229,6 +256,11 @@ export class AgentLoop {
     this.stepBackHints = opts.stepBackHints ?? true;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
     this.maxTurnRetries = Math.max(0, opts.maxTurnRetries ?? DEFAULT_MAX_TURN_RETRIES);
+    this.maxStopGateContinuations = Math.max(
+      0,
+      opts.maxStopGateContinuations ?? DEFAULT_MAX_STOP_GATE_CONTINUATIONS,
+    );
+    this.finalSummaryTurn = opts.finalSummaryTurn ?? false;
     this.retryBackoffMs = opts.retryBackoffMs ?? backoffMs;
     this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
     this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
@@ -267,6 +299,8 @@ export class AgentLoop {
     let appendedTokens = 0;
     // Consecutive turns whose every tool call errored — drives the step-back note.
     let consecutiveFailedTurns = 0;
+    // How many times onBeforeStop has already continued this run.
+    let stopGateContinuations = 0;
 
     for (;;) {
       turn++;
@@ -283,30 +317,24 @@ export class AgentLoop {
       };
       await this.hooks.onBeforeTurn?.(turnCtx);
 
+      const toolless =
+        this.finalSummaryTurn && Number.isFinite(this.maxTurns) && turn >= this.maxTurns;
+
       const request: ModelRequest = {
         model: this.opts.model.model,
         messages,
-        tools: this.opts.tools.definitions(),
+        ...(toolless ? {} : { tools: this.opts.tools.definitions() }),
         maxOutputTokens: this.maxOutputTokens,
         ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
         ...(this.opts.system ? { system: this.opts.system } : {}),
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
-
-      // Ephemeral nudges (turn budget, step-back-when-stuck): rebuilt each turn,
-      // appended only to this request's trailing message, never written back to
-      // `messages`. Keeps the cached prefix (system + prior turns) stable.
-      const notes = [
-        this.turnBudgetNote(turn),
-        this.stallNote(consecutiveFailedTurns),
-      ].filter((n): n is string => n !== undefined);
-      if (notes.length > 0 && messages.length > 0) {
-        const last = messages[messages.length - 1]!;
-        request.messages = [
-          ...messages.slice(0, -1),
-          { ...last, content: [...last.content, { type: 'text', text: notes.join('\n\n') }] },
-        ];
-      }
+      request.messages = this.withEphemeralNotes(
+        messages,
+        turn,
+        consecutiveFailedTurns,
+        toolless,
+      );
 
       if (
         this.opts.maxTokens !== undefined &&
@@ -332,41 +360,27 @@ export class AgentLoop {
           turnCtx,
         );
         if (compacted && compacted.messages.length > 0) {
-          const before = contextTokens;
-          messages.length = 0;
-          messages.push(...compacted.messages);
-          let compactionCostUSD: number | undefined;
-          if (compacted.usage) {
-            usage = addUsage(usage, compacted.usage);
-            const pricing = this.opts.model.capabilities.pricing;
-            if (pricing) {
-              compactionCostUSD = estimateCostUSD(compacted.usage, pricing);
-              costUSD += compactionCostUSD ?? 0;
-            }
-          }
+          const applied = await this.applyCompaction(
+            messages,
+            compacted,
+            turn,
+            request,
+            usage,
+            costUSD,
+            contextTokens,
+          );
+          usage = applied.usage;
+          costUSD = applied.costUSD;
           prevUsage = undefined;
           appendedTokens = 0;
-          contextTokens = estimateRequestTokens({ ...request, messages });
+          contextTokens = applied.contextTokens;
           ratio = contextTokens / availableWindow;
-          const keptTurns = compacted.keptTurns ?? 0;
-          this.emit({
-            type: 'compaction',
-            tokensBefore: before,
-            tokensAfter: contextTokens,
-            keptTurns,
-          });
-          await this.opts.recorder?.recordCompaction([...messages], {
-            tokensBefore: before,
-            tokensAfter: contextTokens,
-            keptTurns,
-          });
-          await this.opts.trace?.compaction({
+          request.messages = this.withEphemeralNotes(
+            messages,
             turn,
-            tokensBefore: before,
-            tokensAfter: contextTokens,
-            keptTurns,
-            ...(compactionCostUSD !== undefined ? { costUSD: compactionCostUSD } : {}),
-          });
+            consecutiveFailedTurns,
+            toolless,
+          );
         }
       }
 
@@ -397,25 +411,72 @@ export class AgentLoop {
         });
       }
 
+      // At most one mid-turn salvage: provider says context_length → compact once
+      // and re-send. Without onCompact (--no-compact) or after a failed salvage,
+      // fall through to the existing error path.
       let response: ModelResponse;
-      try {
-        response = await this.streamTurnWithRetry(request, turn);
-      } catch (err) {
-        if (err instanceof ProviderError && err.kind === 'aborted') {
-          return this.stop(messages, usage, completedTurns, 'aborted');
+      let salvagedContext = false;
+      for (;;) {
+        try {
+          response = await this.streamTurnWithRetry(request, turn);
+          break;
+        } catch (err) {
+          const canSalvage =
+            err instanceof ProviderError &&
+            err.kind === 'context_length' &&
+            this.hooks.onCompact !== undefined &&
+            !salvagedContext;
+          if (canSalvage) {
+            salvagedContext = true;
+            const compacted = await this.hooks.onCompact!(
+              messages,
+              {
+                usedTokens: contextTokens,
+                windowTokens: availableWindow,
+                ratio: contextTokens / availableWindow,
+              },
+              turnCtx,
+            );
+            if (compacted && compacted.messages.length > 0) {
+              const applied = await this.applyCompaction(
+                messages,
+                compacted,
+                turn,
+                request,
+                usage,
+                costUSD,
+                contextTokens,
+              );
+              usage = applied.usage;
+              costUSD = applied.costUSD;
+              prevUsage = undefined;
+              appendedTokens = 0;
+              contextTokens = applied.contextTokens;
+              request.messages = this.withEphemeralNotes(
+                messages,
+                turn,
+                consecutiveFailedTurns,
+                toolless,
+              );
+              continue;
+            }
+          }
+          if (err instanceof ProviderError && err.kind === 'aborted') {
+            return this.stop(messages, usage, completedTurns, 'aborted');
+          }
+          await this.opts.trace?.error({
+            turn,
+            scope: 'provider',
+            message: err instanceof Error ? err.message : String(err),
+          });
+          // A ProviderError is a known, reportable failure — let it propagate so
+          // the caller can surface it. Anything else escaping the provider (an
+          // unclassified stream/transport error) must not take the process down:
+          // end the run at `error` so `runTurn` returns a result the caller can
+          // inspect, same as any other stop reason.
+          if (err instanceof ProviderError) throw err;
+          return this.stop(messages, usage, completedTurns, 'error');
         }
-        await this.opts.trace?.error({
-          turn,
-          scope: 'provider',
-          message: err instanceof Error ? err.message : String(err),
-        });
-        // A ProviderError is a known, reportable failure — let it propagate so
-        // the caller can surface it. Anything else escaping the provider (an
-        // unclassified stream/transport error) must not take the process down:
-        // end the run at `error` so `runTurn` returns a result the caller can
-        // inspect, same as any other stop reason.
-        if (err instanceof ProviderError) throw err;
-        return this.stop(messages, usage, completedTurns, 'error');
       }
 
       usage = addUsage(usage, response.usage);
@@ -438,12 +499,41 @@ export class AgentLoop {
       messages.push(assistantMessage);
       await this.opts.recorder?.recordMessage(assistantMessage);
 
+      const calls = toolUsesOf(response.content);
+      // Truncation mid tool-call args: keep going so we return an error tool_result
+      // (tier 3) instead of dropping the call. Pure text truncation / content_filter
+      // stop with a distinct reason (tier 1) — never disguise as end_turn.
       if (response.stopReason !== 'tool_use') {
-        return this.stop(messages, usage, completedTurns, 'end_turn');
+        const truncatedTools =
+          response.stopReason === 'max_tokens' && calls.length > 0;
+        if (!truncatedTools) {
+          const reason = agentStopFrom(response.stopReason);
+          if (
+            reason === 'end_turn' &&
+            this.hooks.onBeforeStop &&
+            stopGateContinuations < this.maxStopGateContinuations
+          ) {
+            const decision = await this.hooks.onBeforeStop(assistantMessage, turnCtx);
+            if (decision?.continue) {
+              stopGateContinuations++;
+              const contMsg: Message = {
+                role: 'user',
+                content: [{ type: 'text', text: decision.continue }],
+              };
+              messages.push(contMsg);
+              await this.opts.recorder?.recordMessage(contMsg);
+              prevUsage = response.usage;
+              appendedTokens = estimateMessageTokens([contMsg]);
+              continue;
+            }
+          }
+          return this.stop(messages, usage, completedTurns, reason);
+        }
       }
 
-      const calls = toolUsesOf(response.content);
-      const { blocks, endsRun } = await this.runToolCalls(calls, turnCtx);
+      const { blocks, endsRun } = await this.runToolCalls(calls, turnCtx, {
+        truncated: response.stopReason === 'max_tokens',
+      });
       const userMessage: Message = { role: 'user', content: blocks };
       messages.push(userMessage);
       await this.opts.recorder?.recordMessage(userMessage);
@@ -468,6 +558,88 @@ export class AgentLoop {
   ): AgentRunResult {
     this.emit({ type: 'stop', reason });
     return { messages, usage, stopReason: reason, turns };
+  }
+
+  /**
+   * Ephemeral nudges (turn budget, step-back-when-stuck, final summary): rebuilt
+   * each turn, appended only to this request's trailing message, never written
+   * back to history. Keeps the cached prefix (system + prior turns) stable.
+   */
+  private withEphemeralNotes(
+    messages: Message[],
+    turn: number,
+    consecutiveFailedTurns: number,
+    toolless = false,
+  ): Message[] {
+    const notes = [
+      toolless ? this.finalSummaryNote(turn) : this.turnBudgetNote(turn),
+      this.stallNote(consecutiveFailedTurns),
+    ].filter((n): n is string => n !== undefined);
+    if (notes.length === 0 || messages.length === 0) return messages;
+    const last = messages[messages.length - 1]!;
+    return [
+      ...messages.slice(0, -1),
+      { ...last, content: [...last.content, { type: 'text', text: notes.join('\n\n') }] },
+    ];
+  }
+
+  /** Last-turn prompt when tools are disabled — forces a text summary. */
+  private finalSummaryNote(turn: number): string {
+    return (
+      `[turn budget] This is turn ${turn} of ${this.maxTurns} — the final turn. Tools are ` +
+      `disabled for this turn; reply with text only. Summarize: (1) what you completed, ` +
+      `(2) what remains unfinished, (3) the concrete next steps you recommend. Do not ` +
+      `claim tools are still available.`
+    );
+  }
+
+  /**
+   * Apply an `onCompact` result: replace history, fold usage/cost, emit and
+   * record. Shared by the ratio-triggered compact and the mid-turn salvage.
+   */
+  private async applyCompaction(
+    messages: Message[],
+    compacted: CompactionResult,
+    turn: number,
+    request: ModelRequest,
+    usage: Usage,
+    costUSD: number,
+    tokensBefore: number,
+  ): Promise<{ usage: Usage; costUSD: number; contextTokens: number }> {
+    messages.length = 0;
+    messages.push(...compacted.messages);
+    let nextUsage = usage;
+    let nextCost = costUSD;
+    let compactionCostUSD: number | undefined;
+    if (compacted.usage) {
+      nextUsage = addUsage(usage, compacted.usage);
+      const pricing = this.opts.model.capabilities.pricing;
+      if (pricing) {
+        compactionCostUSD = estimateCostUSD(compacted.usage, pricing);
+        nextCost += compactionCostUSD ?? 0;
+      }
+    }
+    const contextTokens = estimateRequestTokens({ ...request, messages });
+    const keptTurns = compacted.keptTurns ?? 0;
+    this.emit({
+      type: 'compaction',
+      tokensBefore,
+      tokensAfter: contextTokens,
+      keptTurns,
+    });
+    await this.opts.recorder?.recordCompaction([...messages], {
+      tokensBefore,
+      tokensAfter: contextTokens,
+      keptTurns,
+    });
+    await this.opts.trace?.compaction({
+      turn,
+      tokensBefore,
+      tokensAfter: contextTokens,
+      keptTurns,
+      ...(compactionCostUSD !== undefined ? { costUSD: compactionCostUSD } : {}),
+    });
+    return { usage: nextUsage, costUSD: nextCost, contextTokens };
   }
 
   /**
@@ -547,7 +719,10 @@ export class AgentLoop {
         const retryable =
           err instanceof ProviderError && err.retryable && err.kind !== 'aborted';
         if (!retryable || attempt >= this.maxTurnRetries || this.opts.signal?.aborted) throw err;
-        const delayMs = Math.round(this.retryBackoffMs(attempt));
+        const delayMs =
+          err.retryAfterMs !== undefined
+            ? err.retryAfterMs
+            : Math.round(this.retryBackoffMs(attempt));
         await this.opts.trace?.error({
           turn,
           scope: 'provider',
@@ -593,6 +768,7 @@ export class AgentLoop {
   private async runToolCalls(
     calls: ToolUseBlock[],
     turnCtx: TurnContext,
+    opts: { truncated?: boolean } = {},
   ): Promise<{ blocks: ToolResultBlock[]; endsRun: boolean }> {
     const decisions: Decision[] = await Promise.all(
       calls.map(async (call) => ({
@@ -605,11 +781,17 @@ export class AgentLoop {
     const runOne = async ({ call, decision }: Decision): Promise<void> => {
       this.emit({ type: 'tool_call_start', id: call.id, name: call.name, input: call.input });
       const startedAt = Date.now();
-      const result = await this.executeOne(call, decision);
+      const result = await this.executeOne(call, decision, opts.truncated === true);
       const durationMs = Date.now() - startedAt;
+      const feedback = await this.hooks.onAfterToolCall?.(call, result, turnCtx);
+      if (feedback?.appendToResult) {
+        result.content =
+          result.content === ''
+            ? feedback.appendToResult
+            : `${result.content}\n\n${feedback.appendToResult}`;
+      }
       results.set(call.id, result);
       this.emit({ type: 'tool_call_end', id: call.id, name: call.name, result });
-      await this.hooks.onAfterToolCall?.(call, result, turnCtx);
       await this.opts.recorder?.recordToolCall({
         id: call.id,
         name: call.name,
@@ -627,18 +809,25 @@ export class AgentLoop {
       });
     };
 
-    const parallel = decisions.filter(({ call, decision }) => {
+    // Walk the model's order. Continuous concurrency-safe calls form a batch
+    // and run together; a non-safe call is a barrier that runs alone after
+    // any preceding batch drains. That keeps `[edit, read]` as edit-then-read
+    // while still parallelising consecutive reads / tasks.
+    const isParallelisable = ({ call, decision }: Decision): boolean => {
       if (decision.decision !== 'allow') return false;
-      const spec = this.opts.tools.get(call.name);
-      // `concurrencySafe` is the contract — a write tool that is unsafe to
-      // interleave declares `false` (all of them currently do). `task` is
-      // concurrency-safe though not read-only, so parallel sub-agents work.
-      return spec?.concurrencySafe === true;
-    });
-    const serial = decisions.filter((d) => !parallel.includes(d));
-
-    await runWithConcurrency(parallel, this.concurrency, runOne);
-    for (const d of serial) await runOne(d);
+      return this.opts.tools.get(call.name)?.concurrencySafe === true;
+    };
+    let i = 0;
+    while (i < decisions.length) {
+      if (!isParallelisable(decisions[i]!)) {
+        await runOne(decisions[i]!);
+        i++;
+        continue;
+      }
+      const batchStart = i;
+      while (i < decisions.length && isParallelisable(decisions[i]!)) i++;
+      await runWithConcurrency(decisions.slice(batchStart, i), this.concurrency, runOne);
+    }
 
     const blocks = calls.map((call) => {
       const result = results.get(call.id);
@@ -653,12 +842,21 @@ export class AgentLoop {
     return { blocks, endsRun };
   }
 
-  private async executeOne(call: ToolUseBlock, decision: PermissionDecision): Promise<ToolResult> {
+  private async executeOne(
+    call: ToolUseBlock,
+    decision: PermissionDecision,
+    truncated = false,
+  ): Promise<ToolResult> {
     if (decision.decision === 'deny') {
       return { content: `Denied: ${decision.reason}`, isError: true };
     }
     if (call.parseError) {
-      return { content: `Could not parse arguments: ${call.parseError}`, isError: true };
+      return {
+        content: truncated
+          ? `${TRUNCATED_TOOL_HINT} (parse error: ${call.parseError})`
+          : `Could not parse arguments: ${call.parseError}`,
+        isError: true,
+      };
     }
     const spec = this.opts.tools.get(call.name);
     if (!spec) {

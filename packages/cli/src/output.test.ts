@@ -89,6 +89,17 @@ describe('JsonSink', () => {
     expect((JSON.parse(wrote) as ResultJSON).is_error).toBe(true);
   });
 
+  it('flags max_tokens and content_filter stops as is_error', () => {
+    for (const stopReason of ['max_tokens', 'content_filter'] as const) {
+      stdoutWrite.mockClear();
+      const sink = new JsonSink();
+      sink.finish({ sessionId: 's', stopReason, turns: 1 });
+      const parsed = JSON.parse(stdoutWrite.mock.calls.map((c) => String(c[0])).join('')) as ResultJSON;
+      expect(parsed.is_error).toBe(true);
+      expect(parsed.stop_reason).toBe(stopReason);
+    }
+  });
+
   it('drops a retried model call’s partial text from the result', () => {
     const sink = new JsonSink();
     sink.event({ type: 'text_delta', text: 'turn one. ' });

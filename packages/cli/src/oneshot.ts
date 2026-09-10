@@ -6,6 +6,7 @@
 
 import { AgentSession, ProviderError, addUsage } from '@harness-code/core';
 import type { AgentRunResult, AgentSessionConfig, Usage } from '@harness-code/core';
+import { isErrorStop } from './format.js';
 import { interactiveAsk } from './output.js';
 import type { OutputSink, TextSink } from './output.js';
 import { createPrompter } from './prompter.js';
@@ -76,6 +77,7 @@ export async function runOneshot(opts: OneshotOptions): Promise<void> {
       stopReason: result.stopReason,
       turns: result.turns,
       usage: session.sessionUsage,
+      ...(isErrorStop(result.stopReason) ? { isError: true } : {}),
     });
   } finally {
     prompter?.close();

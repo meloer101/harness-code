@@ -17,7 +17,7 @@ import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { assertInsideWorkspace } from '../permissions/paths.js';
-import type { Message } from '../provider/types.js';
+import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '../provider/types.js';
 import type { ToolResult } from '../tools/types.js';
 
 // ---------------------------------------------------------------------------
@@ -139,6 +139,10 @@ async function readSessionEvents(agentDir: string, id: string): Promise<SessionE
  * the session was ever compacted, starts from the last compaction snapshot and
  * replays only the `message` events recorded after it — so a resumed session
  * continues in the compacted form, not the full pre-compaction history.
+ *
+ * Always runs `normalizeHistory` before returning: a kill mid tool-execution
+ * leaves assistant `tool_use` without matching `tool_result`, which OpenAI-
+ * compatible endpoints reject with 400.
  */
 export async function loadSession(agentDir: string, id: string): Promise<Message[]> {
   const events = await readSessionEvents(agentDir, id);
@@ -154,10 +158,80 @@ export async function loadSession(agentDir: string, id: string): Promise<Message
   const messagesFrom = (slice: SessionEvent[]): Message[] =>
     slice.filter((e) => e.type === 'message' && e.message).map((e) => e.message as Message);
 
-  if (lastCompaction === -1) return messagesFrom(events);
+  if (lastCompaction === -1) return normalizeHistory(messagesFrom(events));
 
   const snapshot = events[lastCompaction]?.compaction?.messages ?? [];
-  return [...snapshot, ...messagesFrom(events.slice(lastCompaction + 1))];
+  return normalizeHistory([...snapshot, ...messagesFrom(events.slice(lastCompaction + 1))]);
+}
+
+/**
+ * Make resumed history valid for providers that require every assistant
+ * `tool_use` to be followed by a matching `tool_result`:
+ * - missing results → synthetic `{ content: 'aborted', isError: true }`
+ * - orphan results (no matching tool_use) → dropped
+ * - user messages left empty after orphan cleanup → dropped
+ */
+export function normalizeHistory(messages: readonly Message[]): Message[] {
+  const out: Message[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!;
+
+    if (msg.role === 'assistant') {
+      out.push(msg);
+      const toolUses = msg.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
+      if (toolUses.length === 0) continue;
+
+      const needed = new Set(toolUses.map((t) => t.id));
+      const next = messages[i + 1];
+      if (next?.role === 'user') {
+        // Consume the following user message here so orphan cleanup runs once.
+        i++;
+        const kept: ContentBlock[] = [];
+        const covered = new Set<string>();
+        for (const block of next.content) {
+          if (block.type === 'tool_result') {
+            if (!needed.has(block.toolUseId)) continue; // orphan
+            covered.add(block.toolUseId);
+            kept.push(block);
+          } else {
+            kept.push(block);
+          }
+        }
+        for (const id of needed) {
+          if (!covered.has(id)) kept.push(abortedResult(id));
+        }
+        if (kept.length > 0) out.push({ role: 'user', content: kept });
+      } else {
+        // Kill mid-tools: assistant is last (or followed by another assistant).
+        out.push({
+          role: 'user',
+          content: toolUses.map((t) => abortedResult(t.id)),
+        });
+      }
+      continue;
+    }
+
+    // Lone user message (no preceding assistant handled above): drop orphan
+    // tool_results; keep text. Empty → skip.
+    const kept: ContentBlock[] = [];
+    for (const block of msg.content) {
+      if (block.type === 'tool_result') continue; // orphan — no open tool_use
+      kept.push(block);
+    }
+    if (kept.length > 0) out.push({ role: 'user', content: kept });
+  }
+
+  return out;
+}
+
+function abortedResult(toolUseId: string): ToolResultBlock {
+  return {
+    type: 'tool_result',
+    toolUseId,
+    content: 'aborted',
+    isError: true,
+  };
 }
 
 const FILE_TOOLS = new Set(['read', 'write', 'edit']);

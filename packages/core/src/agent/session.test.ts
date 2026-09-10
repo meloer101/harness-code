@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { userText } from '../provider/types.js';
-import { SessionRecorder, SessionState, loadSession, rebuildSessionState } from './session.js';
+import { toOpenAIMessages } from '../provider/openai-compat.js';
+import { DEFAULT_CAPABILITIES } from '../provider/capabilities.js';
+import {
+  SessionRecorder,
+  SessionState,
+  loadSession,
+  normalizeHistory,
+  rebuildSessionState,
+} from './session.js';
 
 describe('SessionState', () => {
   it('tracks which files have been read', () => {
@@ -76,6 +84,94 @@ describe('SessionRecorder / loadSession', () => {
     expect(messages[0]).toEqual(snapshot[0]);
     expect(messages[1]).toEqual(snapshot[1]);
     expect(messages[2]).toEqual(userText('post-compaction message'));
+  });
+
+  it('fills aborted tool_results when resume history has tool_use without results', async () => {
+    const recorder = new SessionRecorder(agentDir, 'killed-mid-tool');
+    await recorder.recordMessage(userText('edit the file'));
+    await recorder.recordMessage({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'call_edit',
+          name: 'edit',
+          input: { path: 'a.txt', oldString: 'x', newString: 'y' },
+        },
+      ],
+    });
+    // Process killed before tool_result was recorded.
+
+    const messages = await loadSession(agentDir, 'killed-mid-tool');
+    expect(messages).toHaveLength(3);
+    expect(messages[2]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          toolUseId: 'call_edit',
+          content: 'aborted',
+          isError: true,
+        },
+      ],
+    });
+
+    const wire = toOpenAIMessages(undefined, messages, DEFAULT_CAPABILITIES);
+    const assistantIdx = wire.findIndex((m) => m.role === 'assistant' && m.tool_calls);
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(wire[assistantIdx + 1]).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'call_edit',
+      content: 'aborted',
+    });
+  });
+});
+
+describe('normalizeHistory', () => {
+  it('inserts aborted results for a trailing assistant tool_use', () => {
+    const normalized = normalizeHistory([
+      userText('go'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'bash', input: { command: 'ls' } }],
+      },
+    ]);
+    expect(normalized).toHaveLength(3);
+    expect(normalized[2]?.content).toEqual([
+      { type: 'tool_result', toolUseId: 'c1', content: 'aborted', isError: true },
+    ]);
+  });
+
+  it('fills only the missing tool_result when some results already exist', () => {
+    const normalized = normalizeHistory([
+      userText('go'),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'c1', name: 'read', input: {} },
+          { type: 'tool_use', id: 'c2', name: 'read', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: 'ok' }],
+      },
+    ]);
+    expect(normalized[2]?.content).toEqual([
+      { type: 'tool_result', toolUseId: 'c1', content: 'ok' },
+      { type: 'tool_result', toolUseId: 'c2', content: 'aborted', isError: true },
+    ]);
+  });
+
+  it('drops orphan tool_results and empty user messages', () => {
+    const normalized = normalizeHistory([
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'ghost', content: 'orphan' }],
+      },
+      userText('real'),
+    ]);
+    expect(normalized).toEqual([userText('real')]);
   });
 });
 

@@ -461,10 +461,10 @@ export class OpenAICompatProvider implements Provider {
 
       dl.dispose();
       const detail = await safeReadText(res);
-      const error = mapHttpError(res.status, detail, this.id);
+      const error = mapHttpError(res.status, detail, this.id, retryAfterMs(res.headers));
       if (!error.retryable || attempt === this.cfg.maxRetries) throw error;
       lastError = error;
-      await sleep(retryAfterMs(res.headers) ?? backoffMs(attempt), signal);
+      await sleep(error.retryAfterMs ?? backoffMs(attempt), signal);
     }
 
     throw lastError ?? new ProviderError('unknown', 'Request failed', { provider: this.id });
@@ -766,13 +766,36 @@ function normalizeContentDelta(content: unknown): string {
 // Errors
 // ---------------------------------------------------------------------------
 
-function mapHttpError(status: number, detail: string, provider: string): ProviderError {
+const RETRYABLE_MESSAGE_PATTERNS: RegExp[] = [
+  /overloaded/i,
+  /rate[\s_-]?limit/i,
+  /resource exhausted/i,
+  /try again later/i,
+  /temporarily unavailable/i,
+  /ECONNRESET/i,
+  /socket hang up/i,
+  /EAI_AGAIN/i,
+];
+
+/** True when the error text looks like a transient failure across OpenAI-compat providers. */
+export function messageSuggestsRetry(message: string): boolean {
+  return RETRYABLE_MESSAGE_PATTERNS.some((re) => re.test(message));
+}
+
+function mapHttpError(
+  status: number,
+  detail: string,
+  provider: string,
+  retryAfterMsHint?: number,
+): ProviderError {
   const parsed = parseLooseJSON(detail);
   const payload =
     parsed.ok && typeof parsed.value === 'object' && parsed.value !== null
       ? ((parsed.value as { error?: unknown }).error ?? parsed.value)
       : undefined;
   const message = extractMessage(payload) ?? (detail.slice(0, 400) || `HTTP ${status}`);
+  const retryAfter =
+    retryAfterMsHint !== undefined ? { retryAfterMs: retryAfterMsHint } : {};
 
   if (status === 401 || status === 403) {
     return new ProviderError('auth', `${provider}: ${message}`, {
@@ -794,6 +817,7 @@ function mapHttpError(status: number, detail: string, provider: string): Provide
       status,
       provider,
       detail: redact(detail),
+      ...retryAfter,
     });
   }
   if (status === 400 || status === 413 || status === 422) {
@@ -802,11 +826,14 @@ function mapHttpError(status: number, detail: string, provider: string): Provide
     )
       ? 'context_length'
       : 'bad_request';
+    // Some gateways bury transient overload in a 400 body — upgrade when the text says so.
+    const retryable = kind === 'bad_request' && messageSuggestsRetry(message);
     return new ProviderError(kind, `${provider}: ${message}`, {
       status,
       provider,
-      retryable: false,
+      retryable,
       detail: redact(detail),
+      ...retryAfter,
     });
   }
   if (status >= 500) {
@@ -814,13 +841,15 @@ function mapHttpError(status: number, detail: string, provider: string): Provide
       status,
       provider,
       detail: redact(detail),
+      ...retryAfter,
     });
   }
   return new ProviderError('unknown', `${provider}: ${message}`, {
     status,
     provider,
-    retryable: false,
+    retryable: messageSuggestsRetry(message),
     detail: redact(detail),
+    ...retryAfter,
   });
 }
 

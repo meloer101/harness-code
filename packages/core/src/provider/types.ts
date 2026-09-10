@@ -202,6 +202,8 @@ export class ProviderError extends Error {
   readonly provider: string | undefined;
   /** Truncated response body, for diagnostics. Never contains credentials. */
   readonly detail: string | undefined;
+  /** Server-suggested wait before retrying, from `Retry-After` / similar. */
+  readonly retryAfterMs: number | undefined;
 
   constructor(
     kind: ProviderErrorKind,
@@ -211,6 +213,7 @@ export class ProviderError extends Error {
       retryable?: boolean;
       provider?: string;
       detail?: string;
+      retryAfterMs?: number;
       cause?: unknown;
     } = {},
   ) {
@@ -221,6 +224,7 @@ export class ProviderError extends Error {
     this.retryable = opts.retryable ?? defaultRetryable(kind);
     this.provider = opts.provider;
     this.detail = opts.detail;
+    this.retryAfterMs = opts.retryAfterMs;
   }
 }
 

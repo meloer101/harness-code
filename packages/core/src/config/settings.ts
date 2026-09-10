@@ -36,6 +36,12 @@ export interface Settings extends RouterSettings {
   compactKeepTurns?: number;
   /** Turn budget for a dispatched sub-agent. Default 20. */
   subagentMaxTurns?: number;
+  /**
+   * Signature-level tool-loop guardrails (repeated failing calls, same tool
+   * failing across args, unchanging read-only results). Default enabled; set
+   * `false` to disable for a project/user.
+   */
+  toolGuardrails?: boolean;
   /** Per-session telemetry trace under `.agent/traces`. Default enabled; `--no-trace` overrides per run. */
   telemetry?: { enabled?: boolean };
   /** TUI presentation hints. `theme` is a v1 stub: dark is the default, auto/light land later. */

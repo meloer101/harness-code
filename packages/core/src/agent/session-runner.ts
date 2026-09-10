@@ -61,6 +61,7 @@ import { AgentLoop } from './loop.js';
 import type { AgentEvent, AgentLoopOptions, AgentRunResult } from './loop.js';
 import { mergeHooks } from './hooks.js';
 import type { AgentHooks } from './hooks.js';
+import { createToolGuardrailHooks } from './guardrails.js';
 import type { ActiveSkill, AgentControl } from './control.js';
 import {
   SessionRecorder,
@@ -428,7 +429,26 @@ export class AgentSession {
             }),
           };
     const askHandler = config.askHandler ?? nonInteractiveAskHandler;
-    const hooks = mergeHooks(createPermissionHooks(engine, askHandler), compactHook);
+    const guardrailsEnabled = settings.toolGuardrails !== false;
+    const guardrailHook = guardrailsEnabled
+      ? createToolGuardrailHooks({
+          isReadOnly: readOnlyLookup([
+            ...builtinTools(),
+            ...(skillCatalog.size > 0
+              ? [{ name: 'skill', readOnly: true } as AnyToolSpec]
+              : []),
+            ...(agents.length > 0
+              ? [{ name: 'task', readOnly: false } as AnyToolSpec]
+              : []),
+            ...mcpToolSpecs,
+          ]),
+        })
+      : undefined;
+    const hooks = mergeHooks(
+      createPermissionHooks(engine, askHandler),
+      guardrailHook,
+      compactHook,
+    );
 
     const budgetOverrides: Partial<AgentLoopOptions> = {
       ...(config.budgets.maxTurns !== undefined ? { maxTurns: config.budgets.maxTurns } : {}),
@@ -757,6 +777,9 @@ export class AgentSession {
       }),
       hooks: mergeHooks(
         createPermissionHooks(childEngine, nonInteractiveAskHandler),
+        this.#config.settings.toolGuardrails !== false
+          ? createToolGuardrailHooks({ isReadOnly: readOnlyLookup(childTools) })
+          : undefined,
         this.#compactHook,
       ),
       cwd: this.#cwd,
@@ -799,4 +822,10 @@ export class AgentSession {
     });
     return result;
   }
+}
+
+/** Build an `isReadOnly(name)` lookup from the specs a session or sub-agent will run. */
+function readOnlyLookup(specs: readonly { name: string; readOnly: boolean }[]): (name: string) => boolean {
+  const map = new Map(specs.map((s) => [s.name, s.readOnly]));
+  return (name) => map.get(name) ?? false;
 }
