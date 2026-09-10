@@ -11,10 +11,10 @@ import { render } from 'ink';
 
 import { AgentSession } from '@harness-code/core';
 import type { AgentSessionConfig } from '@harness-code/core';
+import { EventBuffer } from '@harness-code/protocol';
 
 import { App } from './app.js';
 import { ThemeContext } from './hooks/useTheme.js';
-import { EventBuffer } from './state/eventBuffer.js';
 import { UiStore } from './state/bridges.js';
 import { DARK, LIGHT } from './theme.js';
 

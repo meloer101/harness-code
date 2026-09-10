@@ -67,11 +67,24 @@ importers:
         specifier: ^1.7.5
         version: 1.7.5
 
+  packages/protocol:
+    dependencies:
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@harness-code/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/tui:
     dependencies:
       '@harness-code/core':
         specifier: workspace:*
         version: link:../core
+      '@harness-code/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@inkjs/ui':
         specifier: ^2.0.0
         version: 2.0.0(ink@7.1.1(@types/react@19.2.18)(react@19.2.8))

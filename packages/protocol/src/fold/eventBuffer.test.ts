@@ -75,4 +75,37 @@ describe('EventBuffer', () => {
 
     expect(b.snapshot()).toMatchObject({ thinking: '', text: 'turn one. the answer' });
   });
+
+  describe('takeCompletedBatch', () => {
+    it('returns null while a tool is still in flight', () => {
+      const b = new EventBuffer();
+      b.onEvent(start('a'));
+      b.onEvent(start('b'));
+      b.onEvent(end('a')); // b still running
+
+      expect(b.takeCompletedBatch()).toBeNull();
+    });
+
+    it('returns null before any batch boundary has been reached', () => {
+      const b = new EventBuffer();
+      b.onEvent({ type: 'text_delta', text: 'hi' });
+
+      expect(b.takeCompletedBatch()).toBeNull();
+    });
+
+    it('returns the live snapshot and resets once the batch completes', () => {
+      const b = new EventBuffer();
+      b.onEvent({ type: 'text_delta', text: 'ans' });
+      b.onEvent(start('a'));
+      b.onEvent(end('a'));
+
+      const batch = b.takeCompletedBatch();
+      expect(batch).toMatchObject({ text: 'ans', tools: [{ id: 'a', running: false }] });
+
+      // consumed: state is reset, a second call has nothing to hand back
+      expect(b.hasBatchBoundary()).toBe(false);
+      expect(b.snapshot()).toEqual({ thinking: '', text: '', tools: [] });
+      expect(b.takeCompletedBatch()).toBeNull();
+    });
+  });
 });

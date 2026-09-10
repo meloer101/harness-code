@@ -1,89 +1,32 @@
 /**
- * Pure TUI state + reducer. Zero Ink imports — this is the testable core of the
- * UI: given a sequence of actions, what does the screen show?
- *
- * The hot path (per-token streaming) does *not* dispatch one action per delta —
- * the `EventBuffer` mutates synchronously and a ~30fps flush dispatches a single
- * `FLUSH`. Everything else (notices, user turns, modals) is a normal dispatch.
+ * TUI-only state wrapper around the shared protocol fold
+ * (`@harness-code/protocol`'s `FoldState`/`foldReducer`). `overlay`,
+ * `expandedOutput`, and `cwd` are TUI-specific — everything else (the
+ * transcript, live region, usage, context, mode, pending ask/plan) is folded
+ * by the shared reducer so the TUI and the web frontend can never diverge on
+ * how events turn into state. See docs/web.md, "Events".
  */
 
-import type {
-  ContextSnapshot,
-  Notice,
-  PermissionMode,
-  ToolResult,
-  Usage,
-} from '@harness-code/core';
+import type { PermissionMode } from '@harness-code/core';
+import type { FoldAction, FoldState } from '@harness-code/protocol';
+import { emptyLive, foldReducer, initialFoldState } from '@harness-code/protocol';
 
-export interface ToolItem {
-  id: string;
-  name: string;
-  input: unknown;
-  running: boolean;
-  result?: ToolResult;
-}
-
-export interface LiveSnapshot {
-  thinking: string;
-  text: string;
-  tools: ToolItem[];
-}
-
-export type Entry =
-  | { kind: 'user'; id: number; text: string }
-  | { kind: 'assistant'; id: number; thinking: string; text: string; tools: ToolItem[] }
-  | { kind: 'notice'; id: number; notice: Notice };
-
-export interface PendingAsk {
-  toolName: string;
-  input: unknown;
-  reason: string;
-}
-
-export interface PendingPlan {
-  title: string;
-  body: string;
-}
+export type { Entry, LiveSnapshot, PendingAsk, PendingPlan, ToolItem } from '@harness-code/protocol';
+export { emptyLive };
 
 export type OverlayKind = 'help' | 'resume';
 
-export interface TuiState {
-  entries: Entry[];
-  live: LiveSnapshot;
-  usage?: Usage;
-  context?: ContextSnapshot;
-  mode: PermissionMode;
-  modelRef: string;
+export interface TuiState extends FoldState {
   cwd: string;
-  pendingAsk: PendingAsk | null;
-  pendingPlan: PendingPlan | null;
   overlay: OverlayKind | null;
   expandedOutput: boolean;
 }
 
 export type TuiAction =
-  | { type: 'FLUSH'; live: LiveSnapshot }
-  | {
-      /** Commit the in-flight agentic step to the transcript and clear live. */
-      type: 'COMMIT_LIVE';
-      live: LiveSnapshot;
-    }
-  | { type: 'TURN_END'; live: LiveSnapshot; usage?: Usage; context?: ContextSnapshot }
-  | { type: 'NOTICE'; notice: Notice }
-  | { type: 'USER'; text: string }
-  | { type: 'SET_MODE'; mode: PermissionMode }
-  | { type: 'PENDING_ASK'; ask: PendingAsk }
-  | { type: 'RESOLVE_ASK' }
-  | { type: 'PENDING_PLAN'; plan: PendingPlan }
-  | { type: 'RESOLVE_PLAN' }
+  | FoldAction
   | { type: 'OPEN_OVERLAY'; overlay: OverlayKind }
   | { type: 'CLOSE_OVERLAY' }
-  | { type: 'TOGGLE_EXPAND' }
-  | { type: 'NEW_SESSION' };
-
-export function emptyLive(): LiveSnapshot {
-  return { thinking: '', text: '', tools: [] };
-}
+  | { type: 'TOGGLE_EXPAND' };
 
 export function initialTuiState(opts: {
   mode: PermissionMode;
@@ -91,13 +34,8 @@ export function initialTuiState(opts: {
   cwd: string;
 }): TuiState {
   return {
-    entries: [],
-    live: emptyLive(),
-    mode: opts.mode,
-    modelRef: opts.modelRef,
+    ...initialFoldState({ mode: opts.mode, modelRef: opts.modelRef }),
     cwd: opts.cwd,
-    pendingAsk: null,
-    pendingPlan: null,
     overlay: null,
     expandedOutput: false,
   };
@@ -105,42 +43,6 @@ export function initialTuiState(opts: {
 
 export function sessionReducer(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
-    case 'FLUSH':
-      return { ...state, live: action.live };
-    case 'COMMIT_LIVE': {
-      const entries = commitLive(state.entries, action.live);
-      return { ...state, entries, live: emptyLive() };
-    }
-    case 'TURN_END': {
-      const entries = commitLive(state.entries, action.live);
-      return {
-        ...state,
-        entries,
-        live: emptyLive(),
-        ...(action.usage ? { usage: action.usage } : {}),
-        ...(action.context ? { context: action.context } : {}),
-      };
-    }
-    case 'NOTICE':
-      return {
-        ...state,
-        entries: [...state.entries, { kind: 'notice', id: state.entries.length, notice: action.notice }],
-      };
-    case 'USER':
-      return {
-        ...state,
-        entries: [...state.entries, { kind: 'user', id: state.entries.length, text: action.text }],
-      };
-    case 'SET_MODE':
-      return { ...state, mode: action.mode };
-    case 'PENDING_ASK':
-      return { ...state, pendingAsk: action.ask };
-    case 'RESOLVE_ASK':
-      return { ...state, pendingAsk: null };
-    case 'PENDING_PLAN':
-      return { ...state, pendingPlan: action.plan };
-    case 'RESOLVE_PLAN':
-      return { ...state, pendingPlan: null };
     case 'OPEN_OVERLAY':
       return { ...state, overlay: action.overlay };
     case 'CLOSE_OVERLAY':
@@ -148,20 +50,10 @@ export function sessionReducer(state: TuiState, action: TuiAction): TuiState {
     case 'TOGGLE_EXPAND':
       return { ...state, expandedOutput: !state.expandedOutput };
     case 'NEW_SESSION':
-      return initialTuiState({ mode: state.mode, modelRef: state.modelRef, cwd: state.cwd });
+      // The shared reducer only knows its own fields; starting a new session
+      // in the TUI also closes any open overlay and collapses tool output.
+      return { ...state, ...foldReducer(state, action), overlay: null, expandedOutput: false };
+    default:
+      return { ...state, ...foldReducer(state, action) };
   }
-}
-
-function commitLive(entries: Entry[], live: LiveSnapshot): Entry[] {
-  if (live.thinking === '' && live.text === '' && live.tools.length === 0) return entries;
-  return [
-    ...entries,
-    {
-      kind: 'assistant',
-      id: entries.length,
-      thinking: live.thinking,
-      text: live.text,
-      tools: live.tools,
-    },
-  ];
 }

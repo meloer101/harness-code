@@ -1,21 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { emptyLive, initialTuiState, sessionReducer } from './reducer.js';
+import { initialTuiState, sessionReducer } from './reducer.js';
 
 function base() {
   return initialTuiState({ mode: 'ask', modelRef: 'm/1', cwd: '/tmp' });
 }
 
-describe('sessionReducer', () => {
-  it('FLUSH updates the live region', () => {
-    const s = sessionReducer(base(), {
-      type: 'FLUSH',
-      live: { thinking: '', text: 'hi', tools: [] },
-    });
-    expect(s.live.text).toBe('hi');
-  });
-
-  it('USER then TURN_END commits a user + assistant entry and clears live', () => {
+describe('sessionReducer (TUI wrapper)', () => {
+  it('delegates fold actions to the shared protocol reducer', () => {
     let s = base();
     s = sessionReducer(s, { type: 'USER', text: 'hello' });
     s = sessionReducer(s, {
@@ -26,52 +18,17 @@ describe('sessionReducer', () => {
     expect(s.entries).toHaveLength(2);
     expect(s.entries[0]).toMatchObject({ kind: 'user', text: 'hello' });
     expect(s.entries[1]).toMatchObject({ kind: 'assistant', text: 'ans', thinking: 'th' });
-    expect(s.live).toEqual(emptyLive());
     expect(s.usage?.inputTokens).toBe(10);
+    // TUI-only fields survive a delegated action untouched.
+    expect(s.cwd).toBe('/tmp');
   });
 
-  it('TURN_END with an empty live region adds no entry', () => {
-    const s = sessionReducer(base(), { type: 'TURN_END', live: emptyLive() });
-    expect(s.entries).toHaveLength(0);
-  });
-
-  it('COMMIT_LIVE commits the step and clears live without touching usage', () => {
+  it('OPEN_OVERLAY / CLOSE_OVERLAY sets and clears the overlay', () => {
     let s = base();
-    s = sessionReducer(s, {
-      type: 'TURN_END',
-      live: emptyLive(),
-      usage: { inputTokens: 10, outputTokens: 2, cachedInputTokens: 8 },
-    });
-    s = sessionReducer(s, {
-      type: 'COMMIT_LIVE',
-      live: {
-        thinking: 'th',
-        text: 'plan',
-        tools: [
-          {
-            id: 't1',
-            name: 'exit_plan_mode',
-            input: { plan: 'plan' },
-            running: false,
-            result: { content: 'approved' },
-          },
-        ],
-      },
-    });
-    expect(s.entries).toHaveLength(1);
-    expect(s.entries[0]).toMatchObject({
-      kind: 'assistant',
-      text: 'plan',
-      thinking: 'th',
-      tools: [{ name: 'exit_plan_mode', running: false }],
-    });
-    expect(s.live).toEqual(emptyLive());
-    expect(s.usage?.inputTokens).toBe(10);
-  });
-
-  it('COMMIT_LIVE with an empty live region adds no entry', () => {
-    const s = sessionReducer(base(), { type: 'COMMIT_LIVE', live: emptyLive() });
-    expect(s.entries).toHaveLength(0);
+    s = sessionReducer(s, { type: 'OPEN_OVERLAY', overlay: 'help' });
+    expect(s.overlay).toBe('help');
+    s = sessionReducer(s, { type: 'CLOSE_OVERLAY' });
+    expect(s.overlay).toBeNull();
   });
 
   it('TOGGLE_EXPAND flips the output-expansion flag', () => {
@@ -82,22 +39,15 @@ describe('sessionReducer', () => {
     expect(s.expandedOutput).toBe(false);
   });
 
-  it('PENDING_ASK / RESOLVE_ASK round-trips', () => {
-    let s = base();
-    s = sessionReducer(s, {
-      type: 'PENDING_ASK',
-      ask: { toolName: 'bash', input: { command: 'ls' }, reason: 'approve?' },
-    });
-    expect(s.pendingAsk?.toolName).toBe('bash');
-    s = sessionReducer(s, { type: 'RESOLVE_ASK' });
-    expect(s.pendingAsk).toBeNull();
-  });
-
-  it('NEW_SESSION resets entries and live', () => {
+  it('NEW_SESSION resets entries/live (shared) and overlay/expandedOutput (TUI-only), keeping cwd', () => {
     let s = base();
     s = sessionReducer(s, { type: 'USER', text: 'x' });
+    s = sessionReducer(s, { type: 'OPEN_OVERLAY', overlay: 'resume' });
+    s = sessionReducer(s, { type: 'TOGGLE_EXPAND' });
     s = sessionReducer(s, { type: 'NEW_SESSION' });
     expect(s.entries).toHaveLength(0);
-    expect(s.live).toEqual(emptyLive());
+    expect(s.overlay).toBeNull();
+    expect(s.expandedOutput).toBe(false);
+    expect(s.cwd).toBe('/tmp');
   });
 });

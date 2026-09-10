@@ -1,11 +1,12 @@
 /**
  * The push→pull event bridge's mutable half.
  *
- * `AgentSession.onEvent` fires synchronously, once per token. We never dispatch
- * React state on that path (tearing / flicker); instead this object mutates
- * cheaply and the app's flush loop copies `snapshot()` into the reducer every
- * ~33ms. Important events (tool start/end, turn end) also request an immediate
- * flush from the app so the last token is never dropped.
+ * `AgentSession.onEvent` fires synchronously, once per token. Frontends never
+ * dispatch UI state directly on that path (tearing / flicker); instead this
+ * object mutates cheaply and a ~30fps flush loop copies `snapshot()` into the
+ * fold reducer. Important events also request an immediate flush from the
+ * frontend so the last token is never dropped — see docs/web.md, "Delta
+ * coalescing".
  */
 
 import type { AgentEvent } from '@harness-code/core';
@@ -76,12 +77,27 @@ export class EventBuffer {
 
   /**
    * True once a tool batch (one or more tool calls that overlapped in flight)
-   * has fully completed since the last reset. The app consumes this on its
-   * flush loop: when set and no tool is running, the accumulated live content
-   * is a complete agentic step and can be committed to the transcript.
+   * has fully completed since the last reset. Prefer `takeCompletedBatch()`
+   * for the commit itself; this is exposed mainly for tests and callers that
+   * need to observe the boundary without consuming it.
    */
   hasBatchBoundary(): boolean {
     return this.batchBoundary;
+  }
+
+  /**
+   * The batch-commit rule (originally `packages/tui/src/app.tsx` ~L67-70,
+   * now shared so the server applies the same rule per docs/web.md's "Delta
+   * coalescing"): once a full agentic step has completed, hand back its live
+   * snapshot to commit to the transcript and reset for the next step.
+   * Returns `null` while a tool is still running — the card would be frozen
+   * mid-flight in the transcript — or no batch boundary has been reached yet.
+   */
+  takeCompletedBatch(): LiveSnapshot | null {
+    if (!this.batchBoundary || this.hasRunningTool()) return null;
+    const snap = this.snapshot();
+    this.reset();
+    return snap;
   }
 
   reset(): void {

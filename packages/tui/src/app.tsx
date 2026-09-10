@@ -13,12 +13,12 @@ import { Static, Text, useInput } from 'ink';
 
 import type { AgentSession } from '@harness-code/core';
 import { AGENT_DIR, findProjectRoot, listSessionIds } from '@harness-code/core';
+import type { EventBuffer } from '@harness-code/protocol';
 
 import { HistoryEntry, MeterBar, ModeBar, Rule, ToolCard } from './components/display.js';
 import { Input } from './components/Input.js';
 import { Overlay, PermissionModal, PlanModal } from './components/modals.js';
 import { Markdown } from './markdown/render.js';
-import type { EventBuffer } from './state/eventBuffer.js';
 import type { UiStore } from './state/bridges.js';
 import { initialTuiState, sessionReducer } from './state/reducer.js';
 import type { TuiAction } from './state/reducer.js';
@@ -62,12 +62,12 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
       // transcript and start a fresh live region. Without this, one long turn
       // (e.g. plan-mode approval then execution) would pin everything since the
       // last TURN_END at the top of the live region and squeeze the running
-      // output into a sliver. Never commit while a tool is still running — the
-      // card would be frozen mid-flight in the transcript.
-      if (buffer.hasBatchBoundary() && !buffer.hasRunningTool()) {
-        d({ type: 'COMMIT_LIVE', live: buffer.snapshot() });
-        buffer.reset();
-      }
+      // output into a sliver. `takeCompletedBatch` is the shared protocol rule
+      // (never commits while a tool is still running — the card would be
+      // frozen mid-flight in the transcript) so the server applies it
+      // identically for the web frontend.
+      const completedBatch = buffer.takeCompletedBatch();
+      if (completedBatch) d({ type: 'COMMIT_LIVE', live: completedBatch });
       if (store.pendingAsk !== lastAskRef.current) {
         lastAskRef.current = store.pendingAsk;
         d(store.pendingAsk ? { type: 'PENDING_ASK', ask: store.pendingAsk } : { type: 'RESOLVE_ASK' });

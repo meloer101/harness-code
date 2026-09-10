@@ -3,12 +3,12 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
-    "types": ["node"]
+    "lib": ["ES2023"],
+    "types": []
   },
   "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "dist"],
+  "exclude": ["src/**/*.test.ts", "dist"],
   "references": [
-    { "path": "../core" },
-    { "path": "../protocol" }
+    { "path": "../core" }
   ]
 }
