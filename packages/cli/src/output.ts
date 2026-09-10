@@ -23,6 +23,7 @@ import { describeStop, isErrorStop, printUsage } from './format.js';
 import { progressOfEvent, progressOfNotice, usageJSON } from './progress.js';
 import { interactiveAskHandler } from './prompter.js';
 import type { Prompter } from './prompter.js';
+import { StreamJsonSink } from './stream-json.js';
 
 export interface FinishInfo {
   sessionId: string;
@@ -44,6 +45,11 @@ export interface FailInfo {
 }
 
 export interface OutputSink {
+  /**
+   * Optional: session is ready. Used by `stream-json` to emit `thread.started`
+   * before the first model event.
+   */
+  start?(sessionId: string): void;
   event(e: AgentEvent): void;
   notice(n: Notice): void;
   turn(modelRef: string, r: AgentRunResult, context?: ContextSnapshot): void;
@@ -302,7 +308,7 @@ export function createSink(
     case 'json':
       return new JsonSink(opts);
     case 'stream-json':
-      throw new Error('--output-format stream-json is not implemented yet (deferred to v1.1)');
+      return new StreamJsonSink(modelRef);
   }
 }
 

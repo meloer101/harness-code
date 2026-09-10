@@ -51,6 +51,7 @@ export async function runOneshot(opts: OneshotOptions): Promise<void> {
         },
         onNotice: (n) => opts.sink.notice(n),
       });
+      opts.sink.start?.(session.id);
       result = await session.runTurn(opts.prompt);
     } catch (err) {
       // `sessionUsage` only holds sub-agent spend until `runTurn` returns, so
