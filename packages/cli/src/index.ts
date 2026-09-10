@@ -12,9 +12,11 @@ import { Command } from 'commander';
 import {
   AGENT_DIR,
   BUILTIN_PROVIDERS,
+  NoModelConfiguredError,
   ProviderError,
   ProviderRegistry,
   VERSION,
+  buildSessionConfig,
   builtinTools,
   discoverAgents,
   discoverSkills,
@@ -26,7 +28,6 @@ import {
   loginToServer,
   McpHub,
   readTrace,
-  resolveBudgets,
   rollupStats,
   serveOverStdio,
   summarizeTrace,
@@ -248,23 +249,30 @@ program
       },
     ) => {
       const cwd = resolvePath(opts.cwd);
-      const { settings } = await loadSettings(cwd);
-      const ref = opts.model ?? settings.model;
-      if (!ref) {
-        fail('No model configured. Pass --model, or set "model" in .agent/settings.json.');
-      }
 
-      const registry = new ProviderRegistry({ settings });
-      const resolved = registry.resolve(ref);
-      const budgets = resolveBudgets(
-        {
+      let config: AgentSessionConfig;
+      try {
+        config = await buildSessionConfig({
+          cwd,
+          modelRef: opts.model,
           maxTurns: opts.maxTurns,
           maxCost: opts.maxCost,
           maxTokens: opts.maxTokens,
-          noCompact: !opts.compact,
-        },
-        settings,
-      );
+          ...(opts.mode ? { mode: opts.mode } : {}),
+          allow: opts.allow,
+          ask: opts.ask,
+          deny: opts.deny,
+          skills: opts.skills,
+          subagents: opts.subagents,
+          compact: opts.compact,
+          mcp: opts.mcp,
+          trace: opts.trace,
+          ...(opts.resume ? { resumeId: opts.resume } : {}),
+        });
+      } catch (err) {
+        if (err instanceof NoModelConfiguredError) fail(err.message);
+        throw err;
+      }
 
       const frontend = decideFrontend({
         hasPromptArg: prompt !== undefined,
@@ -276,24 +284,6 @@ program
       });
       const stdin = await readStdin();
       const effectivePrompt = buildPrompt(prompt, stdin);
-
-      const config: AgentSessionConfig = {
-        cwd,
-        model: resolved,
-        ...(settings.smallModel ? { summarizerModel: registry.resolve(settings.smallModel) } : {}),
-        settings,
-        budgets,
-        ...(opts.mode ? { mode: opts.mode } : {}),
-        allow: opts.allow,
-        ask: opts.ask,
-        deny: opts.deny,
-        skills: opts.skills,
-        subagents: opts.subagents,
-        compact: opts.compact,
-        mcp: opts.mcp,
-        trace: opts.trace,
-        ...(opts.resume ? { resumeId: opts.resume } : {}),
-      };
 
       if (frontend === 'tui') {
         try {
@@ -309,7 +299,7 @@ program
         }
       }
 
-      const sink = createSink(opts.outputFormat, resolved.ref, { progress: opts.progress });
+      const sink = createSink(opts.outputFormat, config.model.ref, { progress: opts.progress });
       if (frontend === 'oneshot') {
         if (effectivePrompt === undefined) fail('no prompt given (and stdin was empty)');
         const interactive = process.stdin.isTTY && opts.outputFormat === 'text' && !opts.print;

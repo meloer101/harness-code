@@ -17,6 +17,7 @@ import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { assertInsideWorkspace } from '../permissions/paths.js';
+import { textOf } from '../provider/types.js';
 import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '../provider/types.js';
 import type { ToolResult } from '../tools/types.js';
 
@@ -126,6 +127,18 @@ export class SessionRecorder {
   }
 }
 
+/**
+ * A single entry in the *user's* view of a session — every message that was
+ * ever said, with a divider marking where a compaction happened. Contrast
+ * with `loadSession`, which returns the *model's* history: after a
+ * compaction it starts from the summary and the pre-compaction messages are
+ * gone. A UI wants both: the transcript to render, the model history to feed
+ * back into the loop on resume.
+ */
+export type TranscriptItem =
+  | { type: 'message'; ts: number; message: Message }
+  | { type: 'compaction'; ts: number; tokensBefore: number; tokensAfter: number };
+
 async function readSessionEvents(agentDir: string, id: string): Promise<SessionEvent[]> {
   const raw = await readFile(sessionPath(agentDir, id), 'utf8');
   return raw
@@ -162,6 +175,31 @@ export async function loadSession(agentDir: string, id: string): Promise<Message
 
   const snapshot = events[lastCompaction]?.compaction?.messages ?? [];
   return normalizeHistory([...snapshot, ...messagesFrom(events.slice(lastCompaction + 1))]);
+}
+
+/**
+ * Rebuilds the *display* history for a session: every `message` event in
+ * order, with `compaction` events turned into divider markers instead of
+ * being replayed as a jump to the summary — that's `loadSession`'s job, for
+ * the model. A UI renders this to show what was actually said, start to
+ * finish, with a visible seam where context got compacted.
+ */
+export async function loadTranscript(agentDir: string, id: string): Promise<TranscriptItem[]> {
+  const events = await readSessionEvents(agentDir, id);
+  const out: TranscriptItem[] = [];
+  for (const event of events) {
+    if (event.type === 'message' && event.message) {
+      out.push({ type: 'message', ts: event.ts, message: event.message });
+    } else if (event.type === 'compaction' && event.compaction) {
+      out.push({
+        type: 'compaction',
+        ts: event.ts,
+        tokensBefore: event.compaction.tokensBefore,
+        tokensAfter: event.compaction.tokensAfter,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -295,4 +333,51 @@ export async function listSessionIds(
     }
   }
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/** A cheap-to-compute session listing row: id, mtime, and a display title. */
+export interface SessionSummary {
+  id: string;
+  mtimeMs: number;
+  title: string;
+}
+
+const UNTITLED = '(untitled)';
+const TITLE_MAX_LENGTH = 80;
+
+/**
+ * Pairs with `listSessionIds`: for one session id, its file mtime and a title
+ * derived from the first user message. Stops reading the file the moment
+ * that message is found — cheap even for a session with a long, compacted
+ * history, since the title never lives past the first few lines.
+ */
+export async function readSessionSummary(agentDir: string, id: string): Promise<SessionSummary> {
+  const path = sessionPath(agentDir, id);
+  const [stats, title] = await Promise.all([stat(path), firstUserMessageTitle(path)]);
+  return { id, mtimeMs: stats.mtimeMs, title };
+}
+
+async function firstUserMessageTitle(path: string): Promise<string> {
+  const { createReadStream } = await import('node:fs');
+  const { createInterface } = await import('node:readline');
+
+  const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }) });
+  try {
+    for await (const line of rl) {
+      if (line.trim() === '') continue;
+      let event: SessionEvent;
+      try {
+        event = JSON.parse(line) as SessionEvent;
+      } catch {
+        continue; // Corrupt line — keep scanning for a usable title.
+      }
+      if (event.type !== 'message' || event.message?.role !== 'user') continue;
+      const text = textOf(event.message.content).replace(/\s+/g, ' ').trim();
+      if (text === '') continue; // e.g. a tool_result-only user message.
+      return text.length > TITLE_MAX_LENGTH ? `${text.slice(0, TITLE_MAX_LENGTH - 1)}…` : text;
+    }
+  } finally {
+    rl.close();
+  }
+  return UNTITLED;
 }
