@@ -5,7 +5,8 @@
  * action — plain `\x1b[…m`, no chalk (the "no chalk" rule applies to
  * scriptable `hc` output). `JsonSink` buffers the assistant text and emits one
  * snake_case object at `finish()`, deliberately close to Claude Code's
- * `--output-format json` shape so `jq` snippets transfer.
+ * `--output-format json` shape so `jq` snippets transfer; with `progress` on
+ * it also streams JSONL progress lines (`progress.ts`) to stderr.
  */
 
 import { cacheHitRate } from '@harness-code/core';
@@ -19,6 +20,7 @@ import type {
 } from '@harness-code/core';
 import type { AgentSession } from '@harness-code/core';
 import { describeStop, printUsage } from './format.js';
+import { progressOfEvent, progressOfNotice, usageJSON } from './progress.js';
 import { interactiveAskHandler } from './prompter.js';
 import type { Prompter } from './prompter.js';
 
@@ -28,6 +30,17 @@ export interface FinishInfo {
   turns: number;
   usage?: Usage;
   isError?: boolean;
+  /** Set when the run died on an error rather than reaching a stop reason. */
+  error?: { message: string; kind?: string };
+}
+
+/** A run that threw instead of returning — `sessionId` is empty if the session never started. */
+export interface FailInfo {
+  sessionId: string;
+  turns: number;
+  usage?: Usage;
+  context?: ContextSnapshot;
+  error: { message: string; kind?: string };
 }
 
 export interface OutputSink {
@@ -35,6 +48,12 @@ export interface OutputSink {
   notice(n: Notice): void;
   turn(modelRef: string, r: AgentRunResult, context?: ContextSnapshot): void;
   finish(info: FinishInfo): void;
+  /**
+   * The run threw. The caller still re-throws so the error is printed and the
+   * exit code is non-zero; this is the sink's chance to leave its own record
+   * (for `JsonSink`, the one stdout result object a scripted caller relies on).
+   */
+  fail(info: FailInfo): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +135,14 @@ export class TextSink implements OutputSink {
       `\x1b[2msession ${info.sessionId} · stop: ${info.stopReason}${cacheSummaryOf(info.usage)}\x1b[0m\n`,
     );
   }
+
+  /** The error itself is printed by `main()`; just leave the session id for `--resume`. */
+  fail(info: FailInfo): void {
+    this.flushThinking();
+    if (info.sessionId) {
+      process.stderr.write(`\x1b[2msession ${info.sessionId} · stop: error\x1b[0m\n`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,20 +167,56 @@ export interface ResultJSON {
     window_tokens: number;
     ratio: number;
   };
+  /** Present only when the run died on an error (`stop_reason: "error"`). */
+  error?: { message: string; kind?: string };
+}
+
+export interface JsonSinkOptions {
+  /** Stream JSONL progress lines (tool calls, turns, notices) to stderr while running. */
+  progress?: boolean;
 }
 
 export class JsonSink implements OutputSink {
-  private text = '';
+  /** Text from completed model calls. */
+  private committed = '';
+  /** Text streamed by the in-flight model call — dropped if that call is retried. */
+  private pending = '';
   private isError = false;
   private usage?: Usage;
   private context?: ContextSnapshot;
 
+  constructor(private readonly opts: JsonSinkOptions = {}) {}
+
   event(e: AgentEvent): void {
-    if (e.type === 'text_delta') this.text += e.text;
-    else if (e.type === 'tool_call_end' && e.result.isError) this.isError = true;
+    if (this.opts.progress) {
+      const line = progressOfEvent(e);
+      if (line) {
+        if (e.type === 'turn_end') line.text_chars = this.pending.length;
+        writeLine(line);
+      }
+    }
+    switch (e.type) {
+      case 'text_delta':
+        this.pending += e.text;
+        break;
+      case 'turn_retry':
+        this.pending = '';
+        break;
+      case 'turn_end':
+        this.committed += this.pending;
+        this.pending = '';
+        break;
+      case 'tool_call_end':
+        if (e.result.isError) this.isError = true;
+        break;
+      default:
+        break;
+    }
   }
 
-  notice(_n: Notice): void {}
+  notice(n: Notice): void {
+    if (this.opts.progress) writeLine(progressOfNotice(n));
+  }
 
   turn(_modelRef: string, r: AgentRunResult, context?: ContextSnapshot): void {
     this.usage = r.usage;
@@ -163,10 +226,38 @@ export class JsonSink implements OutputSink {
   finish(info: FinishInfo): void {
     process.stdout.write(
       JSON.stringify(
-        toResultJSON(info, this.text, this.usage, this.context, this.isError || info.isError === true),
+        toResultJSON(
+          info,
+          this.committed + this.pending,
+          this.usage,
+          this.context,
+          this.isError || info.isError === true,
+        ),
       ) + '\n',
     );
   }
+
+  fail(info: FailInfo): void {
+    // The model call in flight when the run died never completed: its partial
+    // text is void, exactly like a retried attempt's.
+    this.pending = '';
+    if (this.opts.progress) {
+      writeLine({ type: 'error', ts: Date.now(), ...info.error });
+    }
+    this.usage = info.usage;
+    this.context = info.context;
+    this.finish({
+      sessionId: info.sessionId,
+      stopReason: 'error',
+      turns: info.turns,
+      isError: true,
+      error: info.error,
+    });
+  }
+}
+
+function writeLine(line: object): void {
+  process.stderr.write(`${JSON.stringify(line)}\n`);
 }
 
 export function toResultJSON(
@@ -184,14 +275,8 @@ export function toResultJSON(
     result: text.trim(),
     is_error: isError,
   };
-  if (usage) {
-    out.usage = {
-      input_tokens: usage.inputTokens,
-      output_tokens: usage.outputTokens,
-      cached_input_tokens: usage.cachedInputTokens,
-      ...(usage.costUSD !== undefined ? { cost_usd: usage.costUSD } : {}),
-    };
-  }
+  if (usage) out.usage = usageJSON(usage);
+  if (info.error) out.error = info.error;
   if (context) {
     out.context = {
       used_tokens: context.usedTokens,
@@ -206,12 +291,16 @@ export function toResultJSON(
 // Factory + ask wiring
 // ---------------------------------------------------------------------------
 
-export function createSink(format: 'text' | 'json' | 'stream-json', modelRef: string): OutputSink {
+export function createSink(
+  format: 'text' | 'json' | 'stream-json',
+  modelRef: string,
+  opts: JsonSinkOptions = {},
+): OutputSink {
   switch (format) {
     case 'text':
       return new TextSink(modelRef);
     case 'json':
-      return new JsonSink();
+      return new JsonSink(opts);
     case 'stream-json':
       throw new Error('--output-format stream-json is not implemented yet (deferred to v1.1)');
   }

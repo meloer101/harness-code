@@ -58,6 +58,16 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
     const tick = (): void => {
       for (const n of store.drainNotices()) d({ type: 'NOTICE', notice: n });
       flushNow();
+      // A completed tool batch ends an agentic step: commit it to the
+      // transcript and start a fresh live region. Without this, one long turn
+      // (e.g. plan-mode approval then execution) would pin everything since the
+      // last TURN_END at the top of the live region and squeeze the running
+      // output into a sliver. Never commit while a tool is still running — the
+      // card would be frozen mid-flight in the transcript.
+      if (buffer.hasBatchBoundary() && !buffer.hasRunningTool()) {
+        d({ type: 'COMMIT_LIVE', live: buffer.snapshot() });
+        buffer.reset();
+      }
       if (store.pendingAsk !== lastAskRef.current) {
         lastAskRef.current = store.pendingAsk;
         d(store.pendingAsk ? { type: 'PENDING_ASK', ask: store.pendingAsk } : { type: 'RESOLVE_ASK' });

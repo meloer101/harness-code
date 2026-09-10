@@ -116,6 +116,8 @@ export type TraceEvent =
       turn: number;
       scope: 'provider' | 'tool';
       message: string;
+      /** A retryable provider failure; the loop re-sent the turn. */
+      willRetry?: boolean;
     }
   | ({
       type: 'run_end';
@@ -243,18 +245,25 @@ export class TraceRecorder {
     });
   }
 
-  async error(r: { turn: number; scope: 'provider' | 'tool'; message: string }): Promise<void> {
+  async error(r: {
+    turn: number;
+    scope: 'provider' | 'tool';
+    message: string;
+    willRetry?: boolean;
+  }): Promise<void> {
     await this.append({
       type: 'error',
       ts: Date.now(),
       turn: r.turn,
       scope: r.scope,
       message: r.message,
+      ...(r.willRetry ? { willRetry: true } : {}),
     });
   }
 }
 
-function summarizeInput(input: unknown): string {
+/** `JSON.stringify(input)`, capped — also used by the CLI's JSONL progress stream. */
+export function summarizeInput(input: unknown): string {
   let s: string;
   try {
     s = typeof input === 'string' ? input : JSON.stringify(input);

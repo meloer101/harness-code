@@ -66,16 +66,25 @@ real and correctly diagnosed.
   (`packages/cli/src/output.ts`). Not needed for the Harbor adapter (uses `json`)
   but blocks any consumer that wants incremental structured events.
 
-### A6. Mid-stream transient failure loses the whole turn — **open**
+### A6. Mid-stream transient failure loses the whole turn — **fixed** (see [runtime-hardening.md](runtime-hardening.md))
 - `request()`'s retry loop wraps only the *initial fetch*. A stall or connection
   drop **mid-SSE-stream** now throws a retryable `ProviderError` (A1), but
-  `loop.ts` re-throws `ProviderError` rather than retrying the turn — so one
-  transient blip still ends the run.
-- **Fix direction:** in `loop.ts`, retry the turn (bounded, with backoff) when
-  `streamTurn` throws a `ProviderError` with `retryable === true`, before
-  falling through to the error stop.
-- **Confidence:** medium (logic is clear from the code; not yet observed to bite
-  post-A1, but the pre-A1 crashes were this path).
+  `loop.ts` re-threw `ProviderError` rather than retrying the turn — so one
+  transient blip still ended the run.
+- **Fix landed:** `AgentLoop.streamTurnWithRetry` re-sends the same request up to
+  `maxTurnRetries` (default 2) times on a retryable, non-abort `ProviderError`,
+  with the shared exponential backoff (`provider/retry.ts`). Safe because the
+  failure precedes any tool execution. Emits a `turn_retry` event (consumers drop
+  the failed attempt's partial deltas — `JsonSink`, TUI `EventBuffer`), a
+  `provider-retry` warn notice, and a trace `error` with `willRetry: true`.
+  Abort during the wait → `aborted`; retries exhausted → the error propagates as
+  before. Sub-agents get it for free (same loop).
+- **Caveats:** a failed partial stream has no `message_end`, so its tokens are
+  not counted in usage. Transport and loop retries nest: against a dead endpoint
+  the worst case is ~(1 + `maxRetries`) × (1 + `maxTurnRetries`) fetch attempts
+  (~26 s observed with defaults) before the error surfaces.
+- **Confidence:** high (unit tests in `loop.test.ts`; verified end-to-end against
+  an unreachable endpoint).
 
 ### A7. `.env` is loaded relative to `process.cwd()`, not `--cwd` — **open / minor**
 - `loadDotEnv(resolvePath(process.cwd(), '.env'))` in `index.ts`. For a headless
@@ -87,15 +96,31 @@ real and correctly diagnosed.
 
 ## B. Observability gaps (headless / benchmark use)
 
-### B1. `--output-format json` produces **zero** stderr until the very end — **open**
-- `JsonSink.notice()` is a no-op and `JsonSink.event()` only accumulates text
-  (`output.ts`). During a 40-turn run, `hc.log` stays empty; nothing is
+### B1. `--output-format json` produces **zero** stderr until the very end — **fixed** (see [runtime-hardening.md](runtime-hardening.md))
+- `JsonSink.notice()` was a no-op and `JsonSink.event()` only accumulated text
+  (`output.ts`). During a 40-turn run, `hc.log` stayed empty; nothing was
   observable until the final one-line JSON. We had to reconstruct every run from
   the `.agent/traces/*.jsonl` file instead.
-- **Fix direction:** with `json` output, still stream structured progress
-  (tool-call starts/ends, notices) to **stderr** as JSONL, or honour
-  `--verbose`. Keeps stdout clean (one result object) while making a headless
-  run debuggable.
+- **Fix landed:** with `json` output, `JsonSink` now streams JSONL progress to
+  **stderr** by default (`packages/cli/src/progress.ts`): `notice`,
+  `tool_start` (capped input summary), `tool_end` (`is_error`, `output_bytes`,
+  capped `error`), `turn_end` (usage + `text_chars`), `turn_retry`,
+  `compaction`, `stop`, each with `ts`. Token deltas are not streamed. stdout is
+  unchanged (one result object). `--no-progress` opts out. The Harbor adapter
+  needs no change — `hc.log` picks it up. The line shapes are meant to be reused
+  for `stream-json` (A5).
+- **Follow-up fixed (found while verifying):** a run that ended on an uncaught
+  error (e.g. retries exhausted) used to print a text error and exit 1 with **no
+  JSON result on stdout**. `runOneshot` now catches it, calls the new
+  `OutputSink.fail()`, and re-throws (so the stderr message and exit code 1 are
+  unchanged). `JsonSink.fail()` writes the usual result object with
+  `stop_reason: "error"`, `is_error: true`, an `error: {message, kind?}` field,
+  the completed model calls' `turns` / `usage` (tallied from `turn_end`, since
+  the run's own result is lost), and drops the dead call's partial text; with
+  progress on it also emits a final `{"type":"error"}` line. Harbor trials that
+  crash now yield a parseable `hc-result.json`. Not covered: errors *before* a
+  sink exists (bad `--model`, missing config) still exit via a plain-text
+  `fail()` in `index.ts`.
 - **Confidence:** high.
 
 ### B2. Exit code doesn't distinguish "solved" / "gave up" / "crashed" — **by-design, but note**
@@ -238,7 +263,8 @@ the scaffold does nothing to counteract them.
 
 ### D4. Default `timeoutMs` 600 000 ms is very generous — **open / minor**
 - Under Rosetta a genuine 10-minute stream is reachable, which is how A1 first
-  fired. Consider a lower default (or per-model) plus the loop-level retry (A6).
+  fired. The loop-level retry (A6) has landed, so a timeout now costs a retry
+  rather than the run; a lower default (or per-model) is still worth considering.
 
 ### D5. Local Docker on Apple Silicon: Rosetta drag — **environmental, affects any local run**
 - TB2 images are amd64; under Rosetta emulation: slow `apt`/build steps,
@@ -256,7 +282,13 @@ Roughly, highest leverage first:
 
 1. ✅ **C1 done-detection** (`<finishing>` prompt block) + ✅ **C2/C3 step-back nudge** — landed; needs a cassette re-record. These are most of the agentic gap and lift *every* model's score. *Next measurement will tell us how much.*
 2. **C4 scratch-file discipline** + the remaining half of C2 (progress signal, not just all-failed) — cheap prompt/scaffold changes.
-3. **A6 loop-level retry of retryable ProviderErrors** — removes the "one transient blip ends the run" failure.
-4. **B1 headless observability** — not a capability fix, but makes every future eval debuggable without re-running.
+3. ✅ **A6 loop-level retry of retryable ProviderErrors** — removes the "one transient blip ends the run" failure.
+4. ✅ **B1 headless observability** — not a capability fix, but makes every future eval debuggable without re-running.
 5. **D1 native Anthropic** (or a blessed OpenRouter path) — required before any Claude-model benchmarking.
 6. **C6 simplicity bias** / **D3 nudge regression** — the `<finishing>` block now says "prefer the simplest approach"; re-check `largest-eigenval` on the next run.
+
+> See also [runtime-learnings.md](runtime-learnings.md) (2026-09-10): a comparison with Codex / opencode /
+> hermes-agent that found four more runtime defects (tool calls reordered within a turn — reproduced;
+> `max_tokens` truncation treated as `end_turn`; no reactive compaction on `context_length`; unrepaired
+> dangling tool calls on `--resume`) and concrete designs for the open half of C2/C3 (signature-level
+> tool-loop guardrails) and for sub-agents that hit `max_turns` (a final tool-less summary turn).

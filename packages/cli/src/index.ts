@@ -217,6 +217,7 @@ program
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
   .option('-p, --print', 'force non-interactive one-shot; never enter the TUI/REPL')
   .option('--output-format <format>', 'text|json|stream-json (json/stream-json imply -p)', 'text')
+  .option('--no-progress', 'with --output-format json, do not stream JSONL progress to stderr')
   .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
   .option('--no-skills', 'do not discover or offer skills')
   .option('--no-subagents', 'do not discover sub-agents or offer the task tool')
@@ -238,6 +239,7 @@ program
         deny: string[];
         print: boolean;
         outputFormat: 'text' | 'json' | 'stream-json';
+        progress: boolean;
         compact: boolean;
         skills: boolean;
         subagents: boolean;
@@ -307,7 +309,7 @@ program
         }
       }
 
-      const sink = createSink(opts.outputFormat, resolved.ref);
+      const sink = createSink(opts.outputFormat, resolved.ref, { progress: opts.progress });
       if (frontend === 'oneshot') {
         if (effectivePrompt === undefined) fail('no prompt given (and stdin was empty)');
         const interactive = process.stdin.isTTY && opts.outputFormat === 'text' && !opts.print;

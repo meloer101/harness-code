@@ -8,6 +8,7 @@
  */
 
 import { estimateCostUSD } from '../provider/capabilities.js';
+import { backoffMs, sleep } from '../provider/retry.js';
 import { analyzeStableParts, breakdownFrom } from '../context/budget.js';
 import { estimateMessageTokens, estimateRequestTokens } from '../context/tokenizer.js';
 import type { ResolvedModel } from '../provider/router.js';
@@ -52,6 +53,12 @@ export type AgentEvent =
   | { type: 'tool_call_start'; id: string; name: string; input: unknown }
   | { type: 'tool_call_end'; id: string; name: string; result: ToolResult }
   | { type: 'turn_end'; usage: Usage }
+  /**
+   * The model call failed mid-stream with a retryable error and will be re-sent
+   * after `delayMs`. Any `text_delta` / `thinking_delta` already emitted for
+   * this turn is void — consumers must discard it. `attempt` is 1-based.
+   */
+  | { type: 'turn_retry'; attempt: number; maxAttempts: number; delayMs: number; message: string }
   | {
       type: 'context';
       usedTokens: number;
@@ -103,7 +110,13 @@ export interface TraceSink {
     ratio: number;
     breakdown: ContextBreakdown;
   }): Promise<void>;
-  error(r: { turn: number; scope: 'provider' | 'tool'; message: string }): Promise<void>;
+  error(r: {
+    turn: number;
+    scope: 'provider' | 'tool';
+    message: string;
+    /** The turn will be re-sent (a retryable provider failure within budget). */
+    willRetry?: boolean;
+  }): Promise<void>;
 }
 
 export interface AgentRunResult {
@@ -158,6 +171,16 @@ export interface AgentLoopOptions {
   contextStopRatio?: number;
   /** Cap on concurrently running read-only tool calls within one turn. */
   concurrency?: number;
+  /**
+   * How many times a model call that fails with a *retryable* `ProviderError`
+   * (a stream dropped or timed out mid-flight, a 5xx/429 that outlasted the
+   * transport's own retries) is re-sent before the error propagates. The
+   * failure happens before any tool runs, so re-sending the same request is
+   * side-effect free. Default 2; `0` restores fail-fast.
+   */
+  maxTurnRetries?: number;
+  /** Delay before turn retry `attempt` (0-based). Defaults to exponential backoff; tests inject 0. */
+  retryBackoffMs?: (attempt: number) => number;
   signal?: AbortSignal;
   /** Passed through to every tool's `ctx.control`. */
   control?: AgentControl;
@@ -166,6 +189,7 @@ export interface AgentLoopOptions {
 
 const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_MAX_TURN_RETRIES = 2;
 const DEFAULT_CONTEXT_WARN_RATIO = 0.8;
 const DEFAULT_CONTEXT_COMPACT_RATIO = 0.92;
 const DEFAULT_CONTEXT_STOP_RATIO = 0.95;
@@ -194,6 +218,8 @@ export class AgentLoop {
   private readonly contextStopRatio: number;
   private readonly turnBudgetHints: boolean;
   private readonly stepBackHints: boolean;
+  private readonly maxTurnRetries: number;
+  private readonly retryBackoffMs: (attempt: number) => number;
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.hooks = opts.hooks ?? allowAllHooks;
@@ -202,6 +228,8 @@ export class AgentLoop {
     this.turnBudgetHints = opts.turnBudgetHints ?? true;
     this.stepBackHints = opts.stepBackHints ?? true;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
+    this.maxTurnRetries = Math.max(0, opts.maxTurnRetries ?? DEFAULT_MAX_TURN_RETRIES);
+    this.retryBackoffMs = opts.retryBackoffMs ?? backoffMs;
     this.maxOutputTokens = opts.maxOutputTokens ?? opts.model.capabilities.maxOutputTokens;
     this.contextWarnRatio = opts.contextWarnRatio ?? DEFAULT_CONTEXT_WARN_RATIO;
     this.contextCompactRatio = opts.contextCompactRatio ?? DEFAULT_CONTEXT_COMPACT_RATIO;
@@ -371,7 +399,7 @@ export class AgentLoop {
 
       let response: ModelResponse;
       try {
-        response = await this.streamTurn(request);
+        response = await this.streamTurnWithRetry(request, turn);
       } catch (err) {
         if (err instanceof ProviderError && err.kind === 'aborted') {
           return this.stop(messages, usage, completedTurns, 'aborted');
@@ -500,6 +528,42 @@ export class AgentLoop {
 
   private emit(event: AgentEvent): void {
     this.opts.onEvent?.(event);
+  }
+
+  /**
+   * `streamTurn`, re-sent up to `maxTurnRetries` times when it fails with a
+   * retryable `ProviderError`. The transport already retries the initial fetch;
+   * this covers what it cannot — a stream that dies after bytes have flowed —
+   * so one transient blip no longer ends the run. Emits `turn_retry` before
+   * each wait so consumers can drop the aborted attempt's partial deltas. An
+   * abort during the wait surfaces as `ProviderError('aborted')`, which the
+   * caller turns into the `aborted` stop.
+   */
+  private async streamTurnWithRetry(request: ModelRequest, turn: number): Promise<ModelResponse> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.streamTurn(request);
+      } catch (err) {
+        const retryable =
+          err instanceof ProviderError && err.retryable && err.kind !== 'aborted';
+        if (!retryable || attempt >= this.maxTurnRetries || this.opts.signal?.aborted) throw err;
+        const delayMs = Math.round(this.retryBackoffMs(attempt));
+        await this.opts.trace?.error({
+          turn,
+          scope: 'provider',
+          message: err.message,
+          willRetry: true,
+        });
+        this.emit({
+          type: 'turn_retry',
+          attempt: attempt + 1,
+          maxAttempts: this.maxTurnRetries,
+          delayMs,
+          message: err.message,
+        });
+        await sleep(delayMs, this.opts.signal);
+      }
+    }
   }
 
   /** Consumes the stream, forwarding deltas out, and returns the final response. */

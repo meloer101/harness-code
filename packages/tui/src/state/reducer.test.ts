@@ -35,6 +35,45 @@ describe('sessionReducer', () => {
     expect(s.entries).toHaveLength(0);
   });
 
+  it('COMMIT_LIVE commits the step and clears live without touching usage', () => {
+    let s = base();
+    s = sessionReducer(s, {
+      type: 'TURN_END',
+      live: emptyLive(),
+      usage: { inputTokens: 10, outputTokens: 2, cachedInputTokens: 8 },
+    });
+    s = sessionReducer(s, {
+      type: 'COMMIT_LIVE',
+      live: {
+        thinking: 'th',
+        text: 'plan',
+        tools: [
+          {
+            id: 't1',
+            name: 'exit_plan_mode',
+            input: { plan: 'plan' },
+            running: false,
+            result: { content: 'approved' },
+          },
+        ],
+      },
+    });
+    expect(s.entries).toHaveLength(1);
+    expect(s.entries[0]).toMatchObject({
+      kind: 'assistant',
+      text: 'plan',
+      thinking: 'th',
+      tools: [{ name: 'exit_plan_mode', running: false }],
+    });
+    expect(s.live).toEqual(emptyLive());
+    expect(s.usage?.inputTokens).toBe(10);
+  });
+
+  it('COMMIT_LIVE with an empty live region adds no entry', () => {
+    const s = sessionReducer(base(), { type: 'COMMIT_LIVE', live: emptyLive() });
+    expect(s.entries).toHaveLength(0);
+  });
+
   it('TOGGLE_EXPAND flips the output-expansion flag', () => {
     let s = base();
     s = sessionReducer(s, { type: 'TOGGLE_EXPAND' });

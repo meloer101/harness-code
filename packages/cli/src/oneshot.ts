@@ -4,8 +4,8 @@
  * `hc -p "…"`, `--output-format json` and piped stdin all land in.
  */
 
-import { AgentSession } from '@harness-code/core';
-import type { AgentSessionConfig } from '@harness-code/core';
+import { AgentSession, ProviderError, addUsage } from '@harness-code/core';
+import type { AgentRunResult, AgentSessionConfig, Usage } from '@harness-code/core';
 import { interactiveAsk } from './output.js';
 import type { OutputSink, TextSink } from './output.js';
 import { createPrompter } from './prompter.js';
@@ -30,15 +30,46 @@ export async function runOneshot(opts: OneshotOptions): Promise<void> {
         )
       : undefined;
 
-  session = await AgentSession.create({
-    ...opts.config,
-    ...(askHandler ? { askHandler } : {}),
-    onEvent: (e) => opts.sink.event(e),
-    onNotice: (n) => opts.sink.notice(n),
-  });
+  // Completed model calls, tallied from `turn_end`: when `runTurn` throws, its
+  // result is lost, and this is all that is left to report the run with.
+  let turns = 0;
+  let runUsage: Usage | undefined;
 
   try {
-    const result = await session.runTurn(opts.prompt);
+    let result: AgentRunResult;
+    try {
+      session = await AgentSession.create({
+        ...opts.config,
+        ...(askHandler ? { askHandler } : {}),
+        onEvent: (e) => {
+          if (e.type === 'turn_end') {
+            turns++;
+            runUsage = runUsage ? addUsage(runUsage, e.usage) : e.usage;
+          }
+          opts.sink.event(e);
+        },
+        onNotice: (n) => opts.sink.notice(n),
+      });
+      result = await session.runTurn(opts.prompt);
+    } catch (err) {
+      // `sessionUsage` only holds sub-agent spend until `runTurn` returns, so
+      // the two never overlap.
+      const prior = session?.sessionUsage;
+      const usage = prior && runUsage ? addUsage(prior, runUsage) : (runUsage ?? prior);
+      const context = session?.contextSnapshot;
+      opts.sink.fail({
+        sessionId: session?.id ?? '',
+        turns,
+        ...(usage ? { usage } : {}),
+        ...(context ? { context } : {}),
+        error: {
+          message: err instanceof Error ? err.message : String(err),
+          ...(err instanceof ProviderError ? { kind: err.kind } : {}),
+        },
+      });
+      throw err;
+    }
+
     opts.sink.turn(opts.config.model.ref, result, session.contextSnapshot);
     opts.sink.finish({
       sessionId: session.id,
@@ -48,6 +79,6 @@ export async function runOneshot(opts: OneshotOptions): Promise<void> {
     });
   } finally {
     prompter?.close();
-    await session.close();
+    await session?.close();
   }
 }

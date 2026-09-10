@@ -19,6 +19,7 @@ import type {
   ModelRequest,
   ModelResponse,
   Provider,
+  ProviderErrorKind,
   StopReason,
   StreamEvent,
   ToolUseBlock,
@@ -36,6 +37,12 @@ export interface ScriptedTurn {
   /** Split `text` into this many deltas, to exercise streaming consumers. */
   chunkSize?: number;
   usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+  /**
+   * Fail this call instead of completing it: stream `afterText` (if any) as
+   * deltas, then throw a `ProviderError` — a stream that died mid-flight.
+   * `retryable` defaults to the kind's default.
+   */
+  error?: { kind: ProviderErrorKind; message?: string; retryable?: boolean; afterText?: string };
 }
 
 /**
@@ -81,6 +88,14 @@ export class ScriptedProvider implements Provider {
     }
 
     yield { type: 'message_start', model: req.model };
+
+    if (turn.error) {
+      if (turn.error.afterText) yield { type: 'text_delta', text: turn.error.afterText };
+      throw new ProviderError(turn.error.kind, turn.error.message ?? `scripted ${turn.error.kind} failure`, {
+        provider: this.id,
+        ...(turn.error.retryable !== undefined ? { retryable: turn.error.retryable } : {}),
+      });
+    }
 
     if (turn.thinking) {
       yield { type: 'thinking_delta', text: turn.thinking };

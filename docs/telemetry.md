@@ -40,7 +40,7 @@ each event's offset from the start of the trace.
 | `compaction` | `turn`, `tokensBefore`, `tokensAfter`, `keptTurns`, `costUSD?` |
 | `context` | `turn`, `usedTokens`, `windowTokens`, `ratio`, `breakdown` (`sys` / `skills` / `projectMemory` / `toolSchemas` / `history`) — one per turn |
 | `subagent` | `name`, `turns`, token fields, `costUSD?`, `stopReason` — a rollup of one dispatched sub-agent |
-| `error` | `turn`, `scope` (`provider`), `message` — a provider error that escaped the loop |
+| `error` | `turn`, `scope` (`provider`), `message`, `willRetry?` — a provider error; `willRetry: true` means it was retryable and the loop re-sent the turn (see `maxTurnRetries`), otherwise it escaped the loop |
 | `run_end` | `stopReason`, `turns`, token fields, `costUSD?`, `wallMs` |
 
 ### What is not recorded

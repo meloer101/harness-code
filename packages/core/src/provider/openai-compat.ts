@@ -13,6 +13,7 @@ import type { CapabilityOverrides, ModelCapabilities } from './capabilities.js';
 import { flattenRequestText, heuristicTokenCount } from '../context/tokenizer.js';
 import type { TokenCounter } from '../context/tokenizer.js';
 import { PromptToolParser, renderToolPrompt } from './prompt-tools.js';
+import { backoffMs, sleep } from './retry.js';
 import { parseSSE } from './sse.js';
 import { parseLooseJSON } from '../util/json.js';
 import {
@@ -858,11 +859,6 @@ function redact(text: string): string {
 // Small utilities
 // ---------------------------------------------------------------------------
 
-function backoffMs(attempt: number): number {
-  const base = Math.min(1_000 * 2 ** attempt, 20_000);
-  return base + Math.random() * 250;
-}
-
 function retryAfterMs(headers: Headers): number | undefined {
   const raw = headers.get('retry-after');
   if (!raw) return undefined;
@@ -871,24 +867,6 @@ function retryAfterMs(headers: Headers): number | undefined {
   const date = Date.parse(raw);
   if (Number.isFinite(date)) return Math.max(0, Math.min(date - Date.now(), 60_000));
   return undefined;
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new ProviderError('aborted', 'Aborted while backing off'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new ProviderError('aborted', 'Aborted while backing off'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /**

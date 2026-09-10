@@ -63,6 +63,11 @@ export interface TuiState {
 
 export type TuiAction =
   | { type: 'FLUSH'; live: LiveSnapshot }
+  | {
+      /** Commit the in-flight agentic step to the transcript and clear live. */
+      type: 'COMMIT_LIVE';
+      live: LiveSnapshot;
+    }
   | { type: 'TURN_END'; live: LiveSnapshot; usage?: Usage; context?: ContextSnapshot }
   | { type: 'NOTICE'; notice: Notice }
   | { type: 'USER'; text: string }
@@ -102,6 +107,10 @@ export function sessionReducer(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
     case 'FLUSH':
       return { ...state, live: action.live };
+    case 'COMMIT_LIVE': {
+      const entries = commitLive(state.entries, action.live);
+      return { ...state, entries, live: emptyLive() };
+    }
     case 'TURN_END': {
       const entries = commitLive(state.entries, action.live);
       return {

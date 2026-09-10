@@ -79,8 +79,15 @@ Each trial dir (`<jobs>/<timestamp>/<task>__<id>/`) has:
 
 - `verifier/` — Harbor's grading; `reward.json` / `reward.txt` is the score.
 - `agent/hc-result.json` — hc's own one-shot JSON: `stop_reason`, `turns`,
-  `usage.{input_tokens,output_tokens,cached_input_tokens,cost_usd}`.
-- `agent/hc.log` — hc's stderr (streamed reasoning, tool calls, notices).
+  `usage.{input_tokens,output_tokens,cached_input_tokens,cost_usd}`. Written
+  even when the run crashes: then `stop_reason` is `"error"`, `is_error` is
+  true, and `error.{message,kind}` says why.
+- `agent/hc.log` — hc's stderr. With `--output-format json` this is a JSONL
+  progress stream written *during* the run — one object per line with `type`
+  `notice` / `tool_start` / `tool_end` / `turn_end` / `turn_retry` /
+  `compaction` / `stop` and a `ts` (epoch ms), e.g.
+  `jq -c 'select(.type=="tool_end" and .is_error)' hc.log`. Pass
+  `--no-progress` to turn it off.
 - `agent/hc-traces/` — hc's `.agent/traces/*.jsonl`, inspectable with
   `hc trace <id> --cwd <that dir's parent>`.
 

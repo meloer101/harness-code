@@ -9,6 +9,7 @@ import type { Message } from '../provider/types.js';
 import type { ToolSpec } from '../tools/types.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { AgentLoop } from './loop.js';
+import type { AgentEvent } from './loop.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks } from './hooks.js';
 
@@ -751,6 +752,124 @@ describe('AgentLoop', () => {
       await loop.run([userText('hi')]);
 
       for (const req of provider.requests) expect(stepBackNote(req)).toBeUndefined();
+    });
+  });
+
+  describe('turn retry on retryable provider errors', () => {
+    const dropped = { kind: 'network' as const, message: 'dropped mid-stream', afterText: 'half an ans' };
+
+    it('re-sends a turn whose stream dropped, emits turn_retry, and keeps history clean', async () => {
+      const provider = new ScriptedProvider([{ error: dropped }, { text: 'the full answer' }]);
+      const events: AgentEvent[] = [];
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        retryBackoffMs: () => 0,
+        onEvent: (e) => events.push(e),
+      });
+
+      const result = await loop.run([userText('hi')]);
+
+      expect(result.stopReason).toBe('end_turn');
+      expect(result.turns).toBe(1);
+      expect(provider.callCount).toBe(2);
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[1]?.content).toEqual([{ type: 'text', text: 'the full answer' }]);
+      // The retry is signalled after the partial delta and before the good one.
+      const kinds = events.filter((e) => e.type === 'text_delta' || e.type === 'turn_retry');
+      expect(kinds).toEqual([
+        { type: 'text_delta', text: 'half an ans' },
+        { type: 'turn_retry', attempt: 1, maxAttempts: 2, delayMs: 0, message: 'dropped mid-stream' },
+        { type: 'text_delta', text: 'the full answer' },
+      ]);
+    });
+
+    it('records the retried failure in the trace with willRetry', async () => {
+      const provider = new ScriptedProvider([{ error: dropped }, { text: 'ok' }]);
+      const errors: unknown[] = [];
+      const trace = {
+        modelCall: async () => {},
+        toolCall: async () => {},
+        compaction: async () => {},
+        context: async () => {},
+        error: async (r: unknown) => void errors.push(r),
+      };
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        trace,
+        retryBackoffMs: () => 0,
+      });
+
+      await loop.run([userText('hi')]);
+
+      expect(errors).toEqual([
+        { turn: 1, scope: 'provider', message: 'dropped mid-stream', willRetry: true },
+      ]);
+    });
+
+    it('propagates the ProviderError once retries are exhausted', async () => {
+      const provider = new ScriptedProvider([{ error: dropped }, { error: dropped }, { error: dropped }]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        retryBackoffMs: () => 0,
+      });
+
+      await expect(loop.run([userText('hi')])).rejects.toMatchObject({
+        name: 'ProviderError',
+        kind: 'network',
+      });
+      expect(provider.callCount).toBe(3); // 1 + 2 retries
+    });
+
+    it('does not retry a non-retryable error', async () => {
+      const provider = new ScriptedProvider([{ error: { kind: 'auth' } }, { text: 'unreached' }]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        retryBackoffMs: () => 0,
+      });
+
+      await expect(loop.run([userText('hi')])).rejects.toMatchObject({ kind: 'auth' });
+      expect(provider.callCount).toBe(1);
+    });
+
+    it('fails fast with maxTurnRetries: 0', async () => {
+      const provider = new ScriptedProvider([{ error: dropped }, { text: 'unreached' }]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        maxTurnRetries: 0,
+      });
+
+      await expect(loop.run([userText('hi')])).rejects.toMatchObject({ kind: 'network' });
+      expect(provider.callCount).toBe(1);
+    });
+
+    it('stops with aborted when the signal trips during the backoff wait', async () => {
+      const provider = new ScriptedProvider([{ error: dropped }, { text: 'unreached' }]);
+      const controller = new AbortController();
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([]),
+        cwd: '/tmp',
+        signal: controller.signal,
+        retryBackoffMs: () => 10_000,
+        onEvent: (e) => {
+          if (e.type === 'turn_retry') controller.abort();
+        },
+      });
+
+      const result = await loop.run([userText('hi')]);
+
+      expect(result.stopReason).toBe('aborted');
+      expect(provider.callCount).toBe(1);
     });
   });
 });

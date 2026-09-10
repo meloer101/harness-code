@@ -93,6 +93,7 @@ export type NoticeKind =
   | 'sandbox-warn'
   | 'compaction'
   | 'context-warn'
+  | 'provider-retry'
   | 'resource'
   | 'subagent'
   | 'error';
@@ -713,6 +714,14 @@ export class AgentSession {
         text:
           `context compacted: ${fmtTokens(event.tokensBefore)} → ${fmtTokens(event.tokensAfter)} tokens ` +
           `(kept last ${event.keptTurns} turn${event.keptTurns === 1 ? '' : 's'})`,
+      });
+    } else if (event.type === 'turn_retry') {
+      this.#config.onNotice?.({
+        kind: 'provider-retry',
+        level: 'warn',
+        text:
+          `provider: model call failed — retrying (${event.attempt}/${event.maxAttempts}) ` +
+          `in ${(event.delayMs / 1000).toFixed(1)}s: ${event.message}`,
       });
     }
     this.#config.onEvent?.(event);
