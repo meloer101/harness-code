@@ -6,7 +6,7 @@ a later Electron shell loads the same web bundle and embeds the same server.
 Reference architecture: t3code (`apps/server` + `apps/web` + `apps/desktop`),
 opencode (`packages/server` + `packages/app` + `packages/desktop`).
 
-Status: design, not yet implemented.
+Status: design, not yet implemented. Build plan: [web-frontend.md](web-frontend.md).
 
 ## What core already gives us
 
