@@ -339,12 +339,19 @@ program
         ...(opts.mock ? { mock: true } : {}),
       });
 
+      // With a Vite dev server in front, the page lives on the dev origin and
+      // proxies `/ws` back here — hand the token to that URL instead.
+      const devUrl = opts.devOrigin
+        ? `${opts.devOrigin.replace(/\/+$/, '')}/#token=${server.token}`
+        : undefined;
+
       console.log(`hc web serving ${cwd}`);
       console.log(`  ${server.url}`);
+      if (devUrl) console.log(`  dev: ${devUrl}`);
       if (opts.mock) console.log('  (mock mode — scripted responses, no API calls)');
       console.log('press Ctrl+C to stop');
 
-      if (opts.open) openBrowser(server.url);
+      if (opts.open) openBrowser(devUrl ?? server.url);
 
       let closing = false;
       const shutdown = (): void => {

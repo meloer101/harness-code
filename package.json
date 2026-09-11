@@ -7,8 +7,8 @@
     "node": ">=20.10"
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b && tsc -p tsconfig.test.json",
+    "build": "tsc -b && pnpm --filter @harness-code/web build",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json && pnpm --filter @harness-code/web typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo evals/dist evals/*.tsbuildinfo *.tsbuildinfo dist-bundle",

@@ -73,7 +73,8 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 
 - Vite + React 19 + TypeScript，`@tailwindcss/vite`，`shadcn init`（组件拷贝到 `src/components/ui/`）；图标用 `lucide-react`。
 - tsconfig 单独配置：`moduleResolution: Bundler`、`lib: DOM`、不加 composite。typecheck 用 `tsc --noEmit`，接入根 `pnpm typecheck`；构建用 `vite build`，接入根 `pnpm build`。
-- **开发流程**：终端 1 跑 `pnpm hc web --no-open --dev-origin http://localhost:5173 [--mock]`，终端 2 跑 `pnpm --filter @harness-code/web dev`。`vite.config.ts` 把 `/ws` 代理到 server 端口（`ws: true`）。token 在 dev 模式下由 server 打印 Vite 地址带 hash 的 URL。
+- **开发流程**：终端 1 跑 `pnpm hc web --no-open --port 4317 --dev-origin http://localhost:5173 [--mock]`，终端 2 跑 `pnpm --filter @harness-code/web dev`。`vite.config.ts` 把 `/ws` 代理到 server 端口（默认 4317，`HC_WEB_PORT` 可改；`ws: true` + `changeOrigin: true`，否则 server 的 Host 校验会 403）。token 在 dev 模式下由 server 打印 Vite 地址带 hash 的 URL（`dev: http://localhost:5173/#token=…`）。
+  - 实现备注：shadcn CLI 在 TS 7（无 `baseUrl`）下解析不了 `@/` 别名，`shadcn add` 后要检查 `cn` 的 import 是否被写成了 `"cn"` 包。本仓库 node_modules 用的是仓库内 `.pnpm-store`，`pnpm install` 需带 `--store-dir .pnpm-store`（shadcn 内部安装用 `npm_config_store_dir` 环境变量）。
 - 暂不上路由库：v1 只有「会话列表 + 会话视图」，用 `#/s/<id>` 这种 hash 状态就够了，以后接 Electron 也兼容。
 - `src/platform.ts`：定义 `Platform` 接口（`openExternal`、`notify`、`storage`），v1 只有浏览器实现。
 - vitest：给 web 的测试文件加 `// @vitest-environment jsdom`，或者在 `vitest.config.ts` 里用 `projects` 拆分；组件测试用 `@testing-library/react`。
