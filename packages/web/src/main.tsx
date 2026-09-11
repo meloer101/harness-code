@@ -30,6 +30,13 @@ if (!token) {
     if (document.visibilityState === 'visible') sync.rpc.wake();
   });
   window.addEventListener('online', () => sync.rpc.wake());
+  // Pasting a freshly printed URL (new server, new token) into this tab only
+  // changes the hash — no page load. Take the new token and start over.
+  window.addEventListener('hashchange', () => {
+    if (!window.location.hash.startsWith('#token=')) return;
+    takeToken();
+    window.location.reload();
+  });
 
   createRoot(root).render(
     <StrictMode>

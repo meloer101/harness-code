@@ -168,3 +168,11 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 2. **M2 完成后**：`hc web --mock --no-open`，用一个小的 node ws 脚本连接，确认 auth、send 和事件流都正常，同时确认错误的 Origin 或 token 会被拒绝。
 3. **M5 每批完成后**：用 in-app Browser pane 打开 `hc web --mock` 的页面，截图检查一轮对话、工具卡片、权限 dock（点 once/always/deny）、plan 审批、中途 abort、刷新页面后 pending ask 仍在、开两个 tab 时先答者生效。
 4. **最后一步**：去掉 `--mock`，用真实模型在本仓库里跑一轮带 bash 和 edit 的任务，检查费用和上下文占比显示，再测一次压缩后分隔线是否正确。
+
+**2026-09-11 真实模型冒烟（M5 第一批后提前跑，`deepseek/deepseek-v4-flash`）**：read → bash `git log` → edit → bash `tail` 一轮跑通，约 $0.015、上下文 3%；从磁盘恢复旧会话能正确显示。压缩分隔线还没测。发现并修掉的问题：
+- **host 并发 ask 死锁**：模型并行发两个要审批的工具调用时，第二个 ask 覆盖了第一个，第一个的 promise 永远不 resolve，整轮挂住。现在 host 用队列，一次只展示一个，abort 时全部结算。
+- **core 的 macOS bash 沙箱挡了 `/dev/null`**：`git` 等以读写方式打开 `/dev/null` 的命令直接失败（TUI 同样受影响）。profile 现在放行 `/dev/null`、`/dev/zero`、`/dev/tty*`、`/dev/fd/*`。
+- **启动 notice 丢失**：它们在 `AgentSession.create` 期间发出，那时 host 还不知道 id，帧里 `sessionId` 是空串；`attach` 时回填，新建会话从 seq 0 订阅以重放它们。
+- **同一标签页粘贴新 URL 不生效**：只改 hash 不重载，旧 token 还在；现在 `#token=` 的 hashchange 会存 token 并重载。
+- **贴底滚动误判**：`content-visibility` 行高落定后内容变高被当成用户上滑；改成只有向上滚才解除贴底，并用 ResizeObserver 跟随内容增长。
+- 待办：从磁盘恢复会话要 ~5s（完整建会话含 MCP 连接）；markdown 原样显示；edit 的审批只显示路径看不到改动内容。

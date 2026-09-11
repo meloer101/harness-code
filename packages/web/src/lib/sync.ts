@@ -94,7 +94,10 @@ export class SessionSync {
   async create(opts: { model?: string; mode?: PermissionMode } = {}): Promise<string | null> {
     try {
       const snapshot = await this.rpc.call('session.create', opts);
-      this.#models.set(snapshot.id, new SessionModel(snapshot));
+      // A fresh session's only events before the snapshot are its startup
+      // notices (skills, MCP, project memory) — which the snapshot doesn't
+      // carry. Subscribe from seq 0 so they replay into the transcript.
+      this.#models.set(snapshot.id, new SessionModel({ ...snapshot, lastSeq: 0 }));
       this.#publish(snapshot.id);
       await this.#subscribe(snapshot.id);
       this.#scheduleListRefresh();

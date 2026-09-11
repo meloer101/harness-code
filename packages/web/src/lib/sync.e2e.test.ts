@@ -75,6 +75,11 @@ describe('SessionSync ↔ hc web --mock', () => {
     expect(id).toBeTruthy();
     const view = () => a.store.getState().views[id!];
     await until(view, 'initial view');
+    // Startup notices predate the snapshot; a new session replays them.
+    await until(
+      () => view()?.entries.some((e) => e.kind === 'notice' && e.notice.kind === 'session-start'),
+      'startup notice',
+    );
 
     expect(await a.sync.send(id!, 'set up a scratch file')).toBe(true);
 
@@ -110,7 +115,7 @@ describe('SessionSync ↔ hc web --mock', () => {
 
     await until(() => view() && !view()!.running && view()!.entries.length >= 5, 'run end');
     const final = view()!;
-    expect(final.entries[0]).toMatchObject({ kind: 'user', text: 'set up a scratch file' });
+    expect(final.entries.find((e) => e.kind === 'user')).toMatchObject({ text: 'set up a scratch file' });
     const tools = final.entries.flatMap((e) => (e.kind === 'assistant' ? e.tools.map((t) => t.name) : []));
     expect(tools).toEqual(['bash', 'write', 'edit']);
     expect(final.entries.at(-1)).toMatchObject({ kind: 'assistant', text: 'All set — the scratch file is ready.' });
