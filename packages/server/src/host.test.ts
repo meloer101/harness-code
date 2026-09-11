@@ -191,6 +191,32 @@ describe('SessionHost', () => {
     expect(host.pending).toBe(false);
   });
 
+  it('broadcasts a mode event when plan approval switches the mode, once per change', async () => {
+    const { host, events } = await makeHost(
+      [
+        { toolCalls: [{ name: 'exit_plan_mode', input: { title: 'P', plan: '1. do it' } }] },
+        { text: 'approved, proceeding' },
+      ],
+      { mode: 'plan' },
+    );
+    const planP = firstEvent(host, 'plan');
+    const settled = runSettled(host);
+    host.send('go');
+    const { planId } = await planP;
+    host.answerPlan(planId, true);
+    await settled;
+
+    const modes = events().filter((e) => e.type === 'mode') as Array<{ mode: string }>;
+    const { mode } = await host.snapshot();
+    expect(mode).not.toBe('plan');
+    expect(modes).toEqual([{ type: 'mode', mode }]);
+
+    // An explicit setMode emits exactly one event; re-setting the same mode emits none.
+    host.setMode('readOnly');
+    host.setMode('readOnly');
+    expect(events().filter((e) => e.type === 'mode')).toHaveLength(2);
+  });
+
   it('replays the gap after sinceSeq while the ring still covers it', async () => {
     const { host, frames } = await makeHost([{ text: 'hello world', chunkSize: 3 }]);
     const settled = runSettled(host);

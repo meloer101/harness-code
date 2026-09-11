@@ -12,6 +12,8 @@
 import { createServer } from 'node:http';
 import type { Server as HttpServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -61,10 +63,14 @@ export interface RunningServer {
 export async function startServer(opts: StartServerOptions): Promise<RunningServer> {
   const { cwd } = opts;
   const projectRoot = await findProjectRoot(cwd);
-  const agentDir = join(projectRoot, AGENT_DIR);
   const token = randomBytes(32).toString('hex');
 
-  const buildConfig = resolveConfigFactory(opts);
+  // `--mock` sessions record into a throwaway dir (removed on close) so a demo
+  // never touches the project's real `.agent/` — see `mockConfigFactory`.
+  const mockDir = opts.mock && !opts.buildConfig ? await mkdtemp(join(tmpdir(), 'hc-web-mock-')) : undefined;
+  const agentDir = mockDir ?? join(projectRoot, AGENT_DIR);
+
+  const buildConfig = resolveConfigFactory(opts, mockDir);
   const registry = new SessionRegistry({ cwd, agentDir, buildConfig });
 
   const serverInfo = async (): Promise<ServerInfo> => {
@@ -114,14 +120,15 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
+      if (mockDir) await rm(mockDir, { recursive: true, force: true });
     },
   };
 }
 
 /** Pick the session factory: explicit injection > `--mock` > the real config assembly. */
-function resolveConfigFactory(opts: StartServerOptions): SessionConfigFactory {
+function resolveConfigFactory(opts: StartServerOptions, mockDir?: string): SessionConfigFactory {
   if (opts.buildConfig) return opts.buildConfig;
-  if (opts.mock) return mockConfigFactory(opts.cwd);
+  if (opts.mock) return mockConfigFactory(opts.cwd, mockDir);
   return (o) =>
     buildSessionConfig({
       cwd: opts.cwd,

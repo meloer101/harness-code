@@ -88,6 +88,8 @@ export class SessionHost {
   readonly #agentDir: string;
   #session: AgentSession | undefined;
   #modelRef = '';
+  /** Last mode broadcast (or snapshotted) — `mode` events fire only on change. */
+  #lastMode: PermissionMode | undefined;
 
   #seq = 0;
   readonly #ring: RingEntry[] = [];
@@ -110,6 +112,7 @@ export class SessionHost {
   /** Wire the live session in. Called once, right after `AgentSession.create`. */
   attach(session: AgentSession, modelRef: string): void {
     this.#session = session;
+    this.#lastMode = session.mode;
     this.id = session.id;
     this.#modelRef = modelRef;
   }
@@ -146,7 +149,19 @@ export class SessionHost {
 
   readonly onNotice = (notice: Notice): void => {
     this.#emit({ type: 'notice', notice });
+    // The session changes mode on its own too (plan approval → acceptEdits),
+    // announcing it only as a notice: turn that into the `mode` event clients
+    // key their mode picker on.
+    if (notice.kind === 'mode-changed') this.#syncMode();
   };
+
+  /** Broadcast the session's current mode if it differs from the last one sent. */
+  #syncMode(): void {
+    const mode = this.#session?.mode;
+    if (mode === undefined || mode === this.#lastMode) return;
+    this.#lastMode = mode;
+    this.#emit({ type: 'mode', mode });
+  }
 
   readonly ask = (req: {
     toolName: string;
@@ -235,7 +250,7 @@ export class SessionHost {
       const trimmed = text.trim();
       if (trimmed === '/plan') {
         session.setMode('plan');
-        this.#emit({ type: 'mode', mode: 'plan' });
+        this.#syncMode();
         this.#endRun(runId, { stopReason: 'end_turn' });
         return;
       }
@@ -296,7 +311,7 @@ export class SessionHost {
 
   setMode(mode: PermissionMode): void {
     this.#requireSession().setMode(mode);
-    this.#emit({ type: 'mode', mode });
+    this.#syncMode();
   }
 
   async compact(): Promise<{ tokensBefore: number; tokensAfter: number } | null> {

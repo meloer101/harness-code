@@ -80,9 +80,16 @@ function mockModel(): ResolvedModel {
 
 /**
  * Build sessions that talk to the scripted provider. `ask` mode by default so
- * the tools prompt; recorder/trace off so a demo run leaves nothing on disk.
+ * the tools prompt; trace off.
+ *
+ * `agentDir` is where the mock records its sessions. Recording matters: the
+ * recorder persists each message as the loop commits it, which is what lets a
+ * snapshot taken mid-run (a reload during a permission ask) show the turn so
+ * far — without it the snapshot only sees turns that already finished.
+ * `startServer` points this at a throwaway temp dir so mock sessions never
+ * land in the project's real `.agent/`. Omitted, recording stays off.
  */
-export function mockConfigFactory(cwd: string): SessionConfigFactory {
+export function mockConfigFactory(cwd: string, agentDir?: string): SessionConfigFactory {
   return (opts) => {
     const config: AgentSessionConfig = {
       cwd,
@@ -93,7 +100,8 @@ export function mockConfigFactory(cwd: string): SessionConfigFactory {
       skills: false,
       subagents: false,
       mcp: false,
-      recorder: false,
+      recorder: agentDir !== undefined,
+      ...(agentDir !== undefined ? { agentDir } : {}),
       trace: false,
       projectMemory: null,
       ...(opts.resumeId ? { resumeId: opts.resumeId } : {}),

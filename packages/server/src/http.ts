@@ -137,9 +137,18 @@ async function isFile(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Vite fingerprints everything under `assets/`, so those can be cached forever;
+ * anything else (index.html above all) must revalidate, or a rebuilt bundle
+ * keeps loading the old entry point.
+ */
+function cacheControl(path: string): string {
+  return path.split(sep).includes('assets') ? 'public, max-age=31536000, immutable' : 'no-cache';
+}
+
 async function sendFile(res: ServerResponse, path: string, headOnly: boolean): Promise<void> {
   const type = CONTENT_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type });
+  res.writeHead(200, { 'content-type': type, 'cache-control': cacheControl(path) });
   if (headOnly) {
     res.end();
     return;
