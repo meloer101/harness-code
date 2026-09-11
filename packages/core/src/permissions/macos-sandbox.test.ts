@@ -1,8 +1,29 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
 import { describe, expect, it } from 'vitest';
 
 import { buildSandboxProfile, wrapCommand } from './macos-sandbox.js';
 
 describe('buildSandboxProfile', () => {
+  it('keeps harmless device writes open (git opens /dev/null read-write)', () => {
+    const profile = buildSandboxProfile('/Users/m/project');
+    expect(profile).toContain('(literal "/dev/null")');
+    expect(profile).toContain('(regex #"^/dev/fd/")');
+  });
+
+  it.runIf(process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec'))(
+    'lets a real sandboxed shell write /dev/null but not outside the workspace',
+    () => {
+      const profile = buildSandboxProfile(tmpdir());
+      const run = (cmd: string) =>
+        spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/sh', '-c', cmd], { encoding: 'utf8' });
+      expect(run('echo hi > /dev/null && echo ok').stdout.trim()).toBe('ok');
+      expect(run('touch /usr/local/hc-sandbox-probe 2>/dev/null || echo denied').stdout.trim()).toBe('denied');
+    },
+  );
+
   it('denies file-write everywhere and re-allows it under the workspace', () => {
     const profile = buildSandboxProfile('/Users/m/project');
     expect(profile).toContain('(deny file-write* (subpath "/"))');

@@ -35,8 +35,18 @@ export function buildSandboxProfile(workspaceRoot: string, extraWritablePaths: r
   const allowClauses = [workspaceRoot, ...extraWritablePaths]
     .map((p) => `(allow file-write* (subpath "${escapeProfilePath(p)}"))`)
     .join('\n');
-  return `(version 1)\n(allow default)\n(deny file-write* (subpath "/"))\n${allowClauses}`;
+  return `(version 1)\n(allow default)\n(deny file-write* (subpath "/"))\n${DEVICE_WRITES}\n${allowClauses}`;
 }
+
+/**
+ * Character devices that ordinary commands open for writing and that can't
+ * persist anything: without these, `git` (and anything else that opens
+ * `/dev/null` read-write) dies with "could not open '/dev/null' ...
+ * Operation not permitted", and redirects to the terminal fail.
+ */
+const DEVICE_WRITES =
+  '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") ' +
+  '(regex #"^/dev/tty") (regex #"^/dev/fd/"))';
 
 function escapeProfilePath(p: string): string {
   return p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
