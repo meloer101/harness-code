@@ -1,0 +1,432 @@
+/**
+ * `SessionHost` — one live `AgentSession` wrapped for many network clients.
+ *
+ * It is the server-side analogue of the TUI's `UiStore` (`packages/tui/src/
+ * state/bridges.ts`), rewritten for N sockets instead of one terminal:
+ *
+ *  - **Event log.** Every wire event gets a per-session monotonic `seq` and is
+ *    kept in a bounded ring buffer so a reconnecting client can replay the gap
+ *    (docs/web.md, "Reconnect and multiple tabs").
+ *  - **Delta coalescing.** Consecutive `text_delta` / `thinking_delta` are
+ *    buffered and flushed as one event every ~30 ms, and immediately before any
+ *    non-delta event — the same rule as `packages/protocol`'s `EventBuffer`,
+ *    moved to the server so every socket sees ~30 frames/s (docs/web.md,
+ *    "Delta coalescing").
+ *  - **Busy flag.** One run at a time: `send` rejects with a `busy` error while
+ *    a run is active (docs/web.md, "Topology").
+ *  - **Run lifecycle.** `run_start` / `run_end` / `run_error` bracket each run.
+ *  - **Pending ask/plan.** Live on the host, not the socket, so a reload
+ *    mid-prompt shows the prompt again; the first answer wins and every client
+ *    gets `resolved`; abort settles a pending ask/plan as a deny.
+ *  - **Slash handling.** `/compact`, `/plan`, and MCP prompts are resolved
+ *    server-side so every client behaves the same.
+ */
+
+import { randomUUID } from 'node:crypto';
+
+import type {
+  AgentEvent,
+  AgentSession,
+  AgentStopReason,
+  Notice,
+  PermissionDecision,
+  PermissionMode,
+  SlashCommandInfo,
+  Usage,
+} from '@harness-code/core';
+import { loadTranscript } from '@harness-code/core';
+import type { ServerFrame, SessionSnapshot, WireEvent } from '@harness-code/protocol';
+
+/** The current run's events plus enough history to serve a reconnect gap. */
+const RING_CAPACITY = 5000;
+/** Delta flush cadence — see docs/web.md, "Delta coalescing". */
+const COALESCE_MS = 30;
+
+/** Thrown by `send` when a run is already active. The WS layer maps it to `busy`. */
+export class BusyError extends Error {
+  constructor() {
+    super('a run is already active for this session');
+    this.name = 'BusyError';
+  }
+}
+
+/** Thrown when an RPC names a session that has no live host. The WS layer maps it to `not_found`. */
+export class SessionNotFoundError extends Error {
+  constructor(id: string) {
+    super(`no live session "${id}"`);
+    this.name = 'SessionNotFoundError';
+  }
+}
+
+interface RingEntry {
+  seq: number;
+  frame: ServerFrame;
+}
+
+interface PendingAsk {
+  askId: string;
+  toolName: string;
+  input: unknown;
+  reason: string;
+  resolve: (decision: PermissionDecision) => void;
+}
+
+interface PendingPlan {
+  planId: string;
+  title: string;
+  body: string;
+  resolve: (result: { approved: boolean; feedback?: string }) => void;
+}
+
+/** A subscriber's frame sink. Registered on `subscribe`, dropped on disconnect. */
+export type Listener = (frame: ServerFrame) => void;
+
+export class SessionHost {
+  /** Assigned after `attach`. */
+  id = '';
+
+  readonly #agentDir: string;
+  #session: AgentSession | undefined;
+  #modelRef = '';
+
+  #seq = 0;
+  readonly #ring: RingEntry[] = [];
+  readonly #listeners = new Set<Listener>();
+
+  #busy = false;
+  #currentRunId: string | undefined;
+
+  #pendingAsk: PendingAsk | null = null;
+  #pendingPlan: PendingPlan | null = null;
+
+  // Delta coalescing buffer: a run of same-typed deltas awaiting flush.
+  #pending: { type: 'text_delta' | 'thinking_delta'; text: string } | null = null;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(opts: { agentDir: string }) {
+    this.#agentDir = opts.agentDir;
+  }
+
+  /** Wire the live session in. Called once, right after `AgentSession.create`. */
+  attach(session: AgentSession, modelRef: string): void {
+    this.#session = session;
+    this.id = session.id;
+    this.#modelRef = modelRef;
+  }
+
+  #requireSession(): AgentSession {
+    if (!this.#session) throw new Error('SessionHost has no session attached');
+    return this.#session;
+  }
+
+  // -- state accessors (for SessionRegistry.list) ---------------------------
+
+  get running(): boolean {
+    return this.#busy;
+  }
+
+  get pending(): boolean {
+    return this.#pendingAsk !== null || this.#pendingPlan !== null;
+  }
+
+  get lastSeq(): number {
+    return this.#seq;
+  }
+
+  // -- seams handed to AgentSession.create ----------------------------------
+
+  readonly onAgentEvent = (event: AgentEvent): void => {
+    if (event.type === 'text_delta' || event.type === 'thinking_delta') {
+      this.#bufferDelta(event.type, event.text);
+      return;
+    }
+    // Any non-delta event flushes the coalesced run first, preserving order.
+    this.#emit(event);
+  };
+
+  readonly onNotice = (notice: Notice): void => {
+    this.#emit({ type: 'notice', notice });
+  };
+
+  readonly ask = (req: {
+    toolName: string;
+    input: unknown;
+    reason: string;
+    signal?: AbortSignal;
+  }): Promise<PermissionDecision> =>
+    new Promise<PermissionDecision>((resolve) => {
+      const askId = randomUUID();
+      this.#pendingAsk = { askId, toolName: req.toolName, input: req.input, reason: req.reason, resolve };
+      this.#emit({
+        type: 'ask',
+        askId,
+        toolName: req.toolName,
+        input: req.input,
+        reason: req.reason,
+      });
+      req.signal?.addEventListener(
+        'abort',
+        () => {
+          // Only settle if this exact ask is still outstanding.
+          if (this.#pendingAsk?.askId !== askId) return;
+          this.#settleAsk('abort', { decision: 'deny', reason: 'Aborted' });
+        },
+        { once: true },
+      );
+    });
+
+  readonly confirm = (req: { title: string; body: string }): Promise<{ approved: boolean; feedback?: string }> =>
+    new Promise<{ approved: boolean; feedback?: string }>((resolve) => {
+      const planId = randomUUID();
+      this.#pendingPlan = { planId, title: req.title, body: req.body, resolve };
+      this.#emit({ type: 'plan', planId, title: req.title, body: req.body });
+    });
+
+  // -- human-in-the-loop answers --------------------------------------------
+
+  /** First answer wins; a stale/duplicate `askId` is a no-op. */
+  answerAsk(askId: string, decision: 'once' | 'always' | 'deny', feedback?: string): void {
+    const p = this.#pendingAsk;
+    if (!p || p.askId !== askId) return;
+    if (decision === 'always') this.#requireSession().engine.addAllowRule(p.toolName);
+    const verdict: PermissionDecision =
+      decision === 'deny'
+        ? { decision: 'deny', reason: feedback ? `User declined: ${feedback}` : 'User declined' }
+        : { decision: 'allow' };
+    this.#settleAsk('user', verdict);
+  }
+
+  answerPlan(planId: string, approved: boolean, feedback?: string): void {
+    const p = this.#pendingPlan;
+    if (!p || p.planId !== planId) return;
+    this.#pendingPlan = null;
+    p.resolve({ approved, ...(feedback ? { feedback } : {}) });
+    this.#emit({ type: 'resolved', requestId: planId, by: 'user' });
+  }
+
+  #settleAsk(by: 'user' | 'abort', decision: PermissionDecision): void {
+    const p = this.#pendingAsk;
+    if (!p) return;
+    this.#pendingAsk = null;
+    p.resolve(decision);
+    this.#emit({ type: 'resolved', requestId: p.askId, by });
+  }
+
+  // -- control --------------------------------------------------------------
+
+  /**
+   * Start a run for `text`. Returns immediately with the run id; events stream
+   * asynchronously and the run is bracketed by `run_start` / `run_end` (or
+   * `run_error`). Throws `BusyError` if a run is already active.
+   */
+  send(text: string): { runId: string } {
+    if (this.#busy) throw new BusyError();
+    const runId = randomUUID();
+    this.#busy = true;
+    this.#currentRunId = runId;
+    this.#emit({ type: 'run_start', runId, input: text });
+    void this.#execute(runId, text);
+    return { runId };
+  }
+
+  async #execute(runId: string, text: string): Promise<void> {
+    const session = this.#requireSession();
+    try {
+      const trimmed = text.trim();
+      if (trimmed === '/plan') {
+        session.setMode('plan');
+        this.#emit({ type: 'mode', mode: 'plan' });
+        this.#endRun(runId, { stopReason: 'end_turn' });
+        return;
+      }
+      if (trimmed === '/compact') {
+        await session.compactNow();
+        this.#endRun(runId, { stopReason: 'end_turn' });
+        return;
+      }
+      let effective = text;
+      if (trimmed.startsWith('/')) {
+        const expanded = await session.expandSlash(trimmed);
+        if (expanded === null) {
+          this.#emit({ type: 'run_error', runId, message: `unknown command "${trimmed.split(/\s+/)[0]}"` });
+          return;
+        }
+        effective = expanded;
+      }
+      const result = await session.runTurn(effective);
+      this.#endRun(runId, {
+        stopReason: result.stopReason,
+        usage: result.usage,
+      });
+    } catch (err) {
+      this.#emit({
+        type: 'run_error',
+        runId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (this.#currentRunId === runId) this.#currentRunId = undefined;
+      this.#busy = false;
+    }
+  }
+
+  #endRun(runId: string, opts: { stopReason: AgentStopReason; usage?: Usage }): void {
+    const session = this.#requireSession();
+    const emptyUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+    this.#emit({
+      type: 'run_end',
+      runId,
+      stopReason: opts.stopReason,
+      usage: opts.usage ?? emptyUsage,
+      sessionUsage: session.sessionUsage ?? opts.usage ?? emptyUsage,
+    });
+  }
+
+  /** Abort the in-flight run; settle any pending ask/plan as a deny. */
+  abort(): void {
+    if (this.#pendingAsk) this.#settleAsk('abort', { decision: 'deny', reason: 'Aborted' });
+    if (this.#pendingPlan) {
+      const p = this.#pendingPlan;
+      this.#pendingPlan = null;
+      p.resolve({ approved: false });
+      this.#emit({ type: 'resolved', requestId: p.planId, by: 'abort' });
+    }
+    this.#session?.abort();
+  }
+
+  setMode(mode: PermissionMode): void {
+    this.#requireSession().setMode(mode);
+    this.#emit({ type: 'mode', mode });
+  }
+
+  async compact(): Promise<{ tokensBefore: number; tokensAfter: number } | null> {
+    return this.#requireSession().compactNow();
+  }
+
+  slashCommands(): SlashCommandInfo[] {
+    return this.#requireSession().listSlashCommands();
+  }
+
+  // -- subscribe / replay ---------------------------------------------------
+
+  addListener(listener: Listener): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * True if the ring still covers every event after `sinceSeq`, so the gap can
+   * be replayed without a full reset.
+   */
+  canReplay(sinceSeq: number): boolean {
+    if (sinceSeq === this.#seq) return true; // exactly caught up — nothing to replay
+    // Client ahead of us: this host was resurrected from disk (its `seq` restarts
+    // at 0) while the client still holds a higher `sinceSeq`. It must reset.
+    if (sinceSeq > this.#seq) return false;
+    const oldest = this.#ring[0];
+    if (!oldest) return false; // events were produced but the ring is empty
+    return oldest.seq <= sinceSeq + 1;
+  }
+
+  /** Buffered frames with `seq > sinceSeq`, oldest first. */
+  since(sinceSeq: number): ServerFrame[] {
+    return this.#ring.filter((e) => e.seq > sinceSeq).map((e) => e.frame);
+  }
+
+  async snapshot(): Promise<SessionSnapshot> {
+    const session = this.#requireSession();
+    const snapshot: SessionSnapshot = {
+      id: this.id,
+      modelRef: this.#modelRef,
+      mode: session.mode,
+      transcript: await this.#loadTranscript(),
+      running: this.#busy,
+      lastSeq: this.#seq,
+    };
+    if (session.sessionUsage) snapshot.usage = session.sessionUsage;
+    if (session.contextSnapshot) snapshot.context = session.contextSnapshot;
+    if (this.#pendingAsk) {
+      snapshot.pendingAsk = {
+        askId: this.#pendingAsk.askId,
+        toolName: this.#pendingAsk.toolName,
+        input: this.#pendingAsk.input,
+        reason: this.#pendingAsk.reason,
+      };
+    }
+    if (this.#pendingPlan) {
+      snapshot.pendingPlan = {
+        planId: this.#pendingPlan.planId,
+        title: this.#pendingPlan.title,
+        body: this.#pendingPlan.body,
+      };
+    }
+    return snapshot;
+  }
+
+  async #loadTranscript(): Promise<SessionSnapshot['transcript']> {
+    try {
+      return await loadTranscript(this.#agentDir, this.id);
+    } catch {
+      // No on-disk record yet (recorder disabled, or nothing sent) — fall back
+      // to the live model history so a fresh session still snapshots cleanly.
+      return this.#requireSession().messages.map((message) => ({
+        type: 'message' as const,
+        ts: 0,
+        message,
+      }));
+    }
+  }
+
+  // -- teardown -------------------------------------------------------------
+
+  async close(): Promise<void> {
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#pending = null;
+    this.#listeners.clear();
+    await this.#session?.close();
+  }
+
+  // -- event pipeline -------------------------------------------------------
+
+  #bufferDelta(type: 'text_delta' | 'thinking_delta', text: string): void {
+    if (this.#pending && this.#pending.type === type) {
+      this.#pending.text += text;
+    } else {
+      // A type switch (thinking → text) flushes the previous run first.
+      if (this.#pending) this.#flushDeltas();
+      this.#pending = { type, text };
+    }
+    if (!this.#timer) {
+      this.#timer = setTimeout(() => {
+        this.#timer = undefined;
+        this.#flushDeltas();
+      }, COALESCE_MS);
+    }
+  }
+
+  #flushDeltas(): void {
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
+    const pending = this.#pending;
+    if (!pending) return;
+    this.#pending = null;
+    this.#push({ type: pending.type, text: pending.text });
+  }
+
+  /** Emit a non-delta wire event, flushing any coalesced deltas ahead of it. */
+  #emit(event: WireEvent): void {
+    this.#flushDeltas();
+    this.#push(event);
+  }
+
+  #push(event: WireEvent): void {
+    const seq = ++this.#seq;
+    const frame: ServerFrame = { t: 'evt', sessionId: this.id, seq, event };
+    this.#ring.push({ seq, frame });
+    if (this.#ring.length > RING_CAPACITY) this.#ring.shift();
+    for (const listener of this.#listeners) listener(frame);
+  }
+}

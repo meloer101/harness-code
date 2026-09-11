@@ -9,7 +9,6 @@
   "exclude": ["src/**/*.test.ts", "dist"],
   "references": [
     { "path": "../core" },
-    { "path": "../server" },
-    { "path": "../tui" }
+    { "path": "../protocol" }
   ]
 }

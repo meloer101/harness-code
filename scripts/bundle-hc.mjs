@@ -15,7 +15,8 @@
  */
 
 import { build } from 'esbuild';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,5 +51,17 @@ await writeFile(
   JSON.stringify(result.metafile, null, 2),
 );
 await chmod(outfile, 0o755);
+
+// Ship the web UI bundle next to hc.mjs so `hc web` finds it via the sibling
+// `./web` candidate in `resolveStaticDir` (packages/server/src/http.ts). The
+// web package lands in M3; until then this is simply skipped.
+const webDist = resolve(root, 'packages/web/dist');
+if (existsSync(webDist)) {
+  const webOut = resolve(root, 'dist-bundle/web');
+  await cp(webDist, webOut, { recursive: true });
+  console.log(`copied web bundle -> ${webOut}`);
+} else {
+  console.log('web bundle not built (packages/web/dist absent) — skipping copy');
+}
 
 console.log(`\nbundled -> ${outfile}`);

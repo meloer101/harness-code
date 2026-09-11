@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@harness-code/core": "workspace:*",
+    "@harness-code/server": "workspace:*",
     "@harness-code/tui": "workspace:*",
     "commander": "^15.0.0"
   }

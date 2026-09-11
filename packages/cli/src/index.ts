@@ -38,6 +38,7 @@ import type {
   PermissionMode,
   TraceSummary,
 } from '@harness-code/core';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
@@ -310,6 +311,55 @@ program
     },
   );
 
+program
+  .command('web')
+  .description('Start the local web UI server (WebSocket + HTTP) and open it in a browser')
+  .option('--cwd <dir>', 'workspace root the sessions operate in', process.cwd())
+  .option('--port <n>', 'port to bind on 127.0.0.1 (0 picks a free one)', (v) => parseInt(v, 10), 0)
+  .option('--no-open', 'do not open the browser automatically')
+  .option('--dev-origin <url>', 'also allow this Origin through the WS handshake (Vite dev server)')
+  .option('-m, --model <ref>', 'default provider/model for new sessions')
+  .option('--mock', 'replay a fixed scripted session instead of calling a real model')
+  .action(
+    async (opts: {
+      cwd: string;
+      port: number;
+      open: boolean;
+      devOrigin?: string;
+      model?: string;
+      mock?: boolean;
+    }) => {
+      const cwd = resolvePath(opts.cwd);
+      const { startServer } = await import('@harness-code/server');
+      const server = await startServer({
+        cwd,
+        port: opts.port,
+        ...(opts.devOrigin ? { devOrigin: opts.devOrigin } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.mock ? { mock: true } : {}),
+      });
+
+      console.log(`hc web serving ${cwd}`);
+      console.log(`  ${server.url}`);
+      if (opts.mock) console.log('  (mock mode — scripted responses, no API calls)');
+      console.log('press Ctrl+C to stop');
+
+      if (opts.open) openBrowser(server.url);
+
+      let closing = false;
+      const shutdown = (): void => {
+        if (closing) return;
+        closing = true;
+        void server.close().then(
+          () => process.exit(0),
+          () => process.exit(1),
+        );
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    },
+  );
+
 const mcp = program.command('mcp').description('Model Context Protocol: connect servers, or expose this tool as one');
 
 mcp
@@ -506,6 +556,24 @@ program
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/** Best-effort "open this URL in the default browser"; a failure is non-fatal. */
+function openBrowser(url: string): void {
+  const platform = process.platform;
+  const [cmd, args] =
+    platform === 'darwin'
+      ? ['open', [url]]
+      : platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // No browser opener available (headless / CI) — the URL is already printed.
+  }
 }
 
 function errorMessageOf(err: unknown): string {
