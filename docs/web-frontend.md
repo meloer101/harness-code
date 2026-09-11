@@ -93,7 +93,16 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 - **批量应用**：事件先进队列，每个 `requestAnimationFrame` 统一 fold 一次，再 `setState`（对应 opencode 的 16ms flush）。
 - **结构共享**：没变的消息和条目保持对象引用不变，`React.memo` 的行组件就不会重渲染（t3code 的 `useStableRows` 思路）。
 
+**实现备注（M4 已完成）**：
+- 纯逻辑层没有照原计划拆成 `serverStore`/`sessionsStore`/`sessionStore(id)` 三个 store，而是一个 zustand store（`lib/store.ts`：status、info、sessions、views）加一个 `SessionSync`（`lib/sync.ts`）：它持有 `RpcClient` 和每个会话的 `SessionModel`（`lib/sessionModel.ts`，包 protocol 的 `EventBuffer` + `foldReducer`），事件立即进 model，每帧把脏会话一次性 `setState`。
+- 打开过的会话一直保持订阅（不 unsubscribe），侧边栏徽标靠 `session.list` 在 run/ask/plan 事件后防抖刷新。
+- 中途打开的会话：tool 的 `tool_use` 在 ask 之前就落盘，但 `tool_call_start` 在 ask 之后才发——`SessionModel` 对已在 snapshot 里的 tool 做原地更新，避免重复卡片。
+- `sync.e2e.test.ts` 用真实 `startServer({ mock: true })` + `ws` 驱动 `SessionSync`，覆盖两个 tab 抢答、中途打开看到 pending ask 和已有 transcript。
+- 顺带修的 server 问题：无参方法客户端不能发 `params: null`（`z.void()` 只收 undefined）；`index.html` 加 `no-cache`、`assets/` 加 `immutable`；plan 批准后 session 自己切 mode 只发 notice，host 现在把 `mode-changed` notice 转成 `mode` 事件；`--mock` 会话录到临时目录（关服时删），这样中途 snapshot 能看到当前轮。
+
 ## M5：UI（按优先级分批）
+
+**第一批已完成**（另外提前做了极简版 `PendingDock`：ask 的 once/always/deny 和 plan 的 approve/reject，不然 mock 剧本会卡在第一个 ask；反馈输入、y/a/n 快捷键、markdown 渲染留给第二批）。
 
 **第一批：跑通一轮对话**
 - `AppShell`：左侧 `SessionSidebar`（新建会话、列表、徽标、当前选中），右侧 `SessionView`。
