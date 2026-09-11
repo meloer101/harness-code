@@ -1,33 +1,30 @@
 import { ClipboardList, ShieldQuestion } from 'lucide-react';
 
-import { describeToolInput } from '@harness-code/core/browser';
-
+import { Markdown } from '@/components/Markdown';
+import { toolPreview } from '@/components/tools/registry';
 import { Button } from '@/components/ui/button';
 import type { SessionViewState } from '@/lib/sessionModel';
 import { useSync } from '@/lib/syncContext';
 
 /**
  * Human-in-the-loop prompts, docked above the composer (opencode-style, no
- * modal). Minimal for now — feedback text and y/a/n shortcuts come with the
- * M5 batch 2 polish.
+ * modal). Edits are reviewed as a diff, writes as the file content, bash as
+ * the highlighted command (`toolPreview`). Feedback text and y/a/n shortcuts
+ * come with the M5 batch 2 polish.
  */
 export function PendingDock({ view }: { view: SessionViewState }) {
   const sync = useSync();
   const { pendingAsk, askId, pendingPlan, planId } = view;
 
   if (pendingAsk && askId) {
-    const summary = describeToolInput(pendingAsk.toolName, pendingAsk.input);
+    const preview = toolPreview(pendingAsk.toolName, pendingAsk.input);
     return (
       <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
         <div className="flex items-center gap-2 font-medium">
           <ShieldQuestion className="size-4 text-amber-500" />
           Allow <span className="font-mono">{pendingAsk.toolName}</span>?
         </div>
-        {summary && (
-          <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-muted/60 px-3 py-2 font-mono text-xs whitespace-pre-wrap">
-            {summary}
-          </pre>
-        )}
+        {preview && <div className="mt-2">{preview}</div>}
         {pendingAsk.reason && <p className="mt-2 text-xs text-muted-foreground">{pendingAsk.reason}</p>}
         <div className="mt-3 flex gap-2">
           <Button size="sm" onClick={() => void sync.answerAsk(view.id, askId, 'once')}>
@@ -51,8 +48,8 @@ export function PendingDock({ view }: { view: SessionViewState }) {
           <ClipboardList className="size-4 text-sky-500" />
           {pendingPlan.title || 'Plan ready for review'}
         </div>
-        <div className="mt-2 max-h-72 overflow-auto rounded-md bg-muted/60 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap">
-          {pendingPlan.body}
+        <div className="mt-2 max-h-72 overflow-auto rounded-md bg-muted/60 px-3 py-2">
+          <Markdown text={pendingPlan.body} className="text-xs" />
         </div>
         <div className="mt-3 flex gap-2">
           <Button size="sm" onClick={() => void sync.answerPlan(view.id, planId, true)}>

@@ -1,10 +1,11 @@
 import { memo, useState } from 'react';
 import { AlertTriangle, ArrowDown, Brain, Check, ChevronRight, Circle, Info, Loader2, X } from 'lucide-react';
 
-import { describeToolInput } from '@harness-code/core/browser';
 import type { Notice } from '@harness-code/core';
 import type { Entry, LiveSnapshot, ToolItem } from '@harness-code/protocol';
 
+import { Markdown } from '@/components/Markdown';
+import { toolView } from '@/components/tools/registry';
 import { Button } from '@/components/ui/button';
 import { useStickToBottom } from '@/hooks/useStickToBottom';
 import type { SessionViewState } from '@/lib/sessionModel';
@@ -82,9 +83,8 @@ function AssistantBlock({
     <div className="flex flex-col gap-2 text-sm">
       {thinking && <Thinking text={thinking} active={streaming && text === '' && tools.length === 0} />}
       {text && (
-        <div className="leading-relaxed whitespace-pre-wrap">
-          {text}
-          {streaming && tools.length === 0 && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-foreground/60 align-text-bottom" />}
+        <div className={cn(streaming && tools.length === 0 && 'md-streaming')}>
+          <Markdown text={text} streaming={streaming} />
         </div>
       )}
       {tools.map((t) => (
@@ -109,20 +109,20 @@ function Thinking({ text, active }: { text: string; active: boolean }) {
 
 function ToolCard({ tool }: { tool: ToolItem }) {
   const isError = tool.result?.isError === true;
-  // Errors start expanded — including ones that arrive after the card mounted.
+  const view = toolView(tool);
+  // Follow the renderer's default (errors open, small diffs open…) until the
+  // user toggles — including defaults that change after mount, like an error
+  // result arriving.
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const open = toggled ?? isError;
-  const setOpen = (fn: (o: boolean) => boolean) => setToggled(fn(open));
-  const summary = describeToolInput(tool.name, tool.input);
-  const output = tool.result?.content ?? '';
+  const open = (toggled ?? view.defaultOpen) && view.body !== null;
 
   return (
-    <div className={cn('rounded-md border text-xs', isError && 'border-red-500/40')}>
+    <div className={cn('overflow-hidden rounded-md border text-xs', isError && 'border-red-500/40')}>
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
-        onClick={() => setOpen((o) => !o)}
-        disabled={!output}
+        onClick={() => setToggled(!open)}
+        disabled={view.body === null}
       >
         {tool.running ? (
           <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
@@ -134,15 +134,14 @@ function ToolCard({ tool }: { tool: ToolItem }) {
         ) : (
           <Check className="size-3.5 shrink-0 text-emerald-500" />
         )}
-        <span className="font-medium">{tool.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{summary}</span>
-        {output && <ChevronRight className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} />}
+        <span className="shrink-0 font-medium">{tool.name}</span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{view.summary}</span>
+        {view.meta}
+        {view.body !== null && (
+          <ChevronRight className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} />
+        )}
       </button>
-      {open && output && (
-        <pre className="max-h-80 overflow-auto border-t bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-          {output}
-        </pre>
-      )}
+      {open && <div className="border-t bg-muted/30">{view.body}</div>}
     </div>
   );
 }

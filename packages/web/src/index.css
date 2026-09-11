@@ -89,6 +89,99 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 }
 
+/* Assistant markdown. Hand-rolled rather than the typography plugin: compact
+   spacing that suits a chat transcript, and theme tokens throughout. */
+@layer components {
+  .md {
+    @apply leading-relaxed break-words;
+  }
+  .md > :first-child {
+    @apply mt-0;
+  }
+  .md > :last-child {
+    @apply mb-0;
+  }
+  .md p,
+  .md ul,
+  .md ol,
+  .md blockquote {
+    @apply my-2;
+  }
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4 {
+    @apply mt-4 mb-2 font-semibold;
+  }
+  .md h1 {
+    @apply text-lg;
+  }
+  .md h2 {
+    @apply text-base;
+  }
+  .md h3,
+  .md h4 {
+    @apply text-[1em];
+  }
+  .md ul {
+    @apply list-disc pl-5;
+  }
+  .md ol {
+    @apply list-decimal pl-5;
+  }
+  .md li {
+    @apply my-0.5;
+  }
+  .md li > ul,
+  .md li > ol {
+    @apply my-0.5;
+  }
+  .md a {
+    @apply text-sky-600 underline underline-offset-2 dark:text-sky-400;
+  }
+  .md blockquote {
+    @apply border-l-2 pl-3 text-muted-foreground;
+  }
+  .md hr {
+    @apply my-4;
+  }
+  .md :not(pre) > code {
+    @apply rounded bg-muted px-1 py-px font-mono text-[0.85em];
+  }
+  .md table {
+    @apply w-full border-collapse text-[0.9em];
+  }
+  .md th,
+  .md td {
+    @apply border px-2 py-1 text-left align-top;
+  }
+  .md th {
+    @apply bg-muted/50 font-medium;
+  }
+  .md input[type='checkbox'] {
+    @apply mr-1 align-middle;
+  }
+
+  /* Blinking caret after the last streamed block. */
+  .md-streaming .md > :last-child::after {
+    content: '';
+    @apply ml-0.5 inline-block h-[1em] w-1.5 animate-pulse bg-foreground/60 align-text-bottom;
+  }
+
+  /* Shiki with `defaultColor: false` emits both themes as CSS variables. */
+  .shiki-wrap pre {
+    background: transparent !important;
+  }
+  .shiki-wrap span {
+    color: var(--shiki-light);
+  }
+  @media (prefers-color-scheme: dark) {
+    .shiki-wrap span {
+      color: var(--shiki-dark);
+    }
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

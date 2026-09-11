@@ -129,6 +129,14 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
   - `exit_plan_mode`：转给 PlanCard。
 - `Thinking`：默认折叠，流式时显示「思考中…」。
 
+**第三批已完成（除 Thinking 外，它第一批就有了）**。实现备注：
+- Shiki 用 `shiki/core` + `createJavaScriptRegexEngine`，不用默认的 Oniguruma WASM——server 的 CSP 是 `script-src 'self'`，不允许编译 WebAssembly。只打包 16 种常用语言，每种一个懒加载 chunk；双主题通过 `--shiki-light/--shiki-dark` CSS 变量随系统切换。
+- 模型输出里的原始 HTML 不渲染（react-markdown 默认）；链接走 `platform.openExternal`。
+- `edit` 的 diff 在比对前给新旧串补结尾换行，否则「在最后一行后追加」会被显示成整行替换。
+- 权限 dock 按工具预览（`toolPreview`）：edit 显示 diff、write 显示高亮后的文件内容、bash 显示高亮命令——审批时能看到到底要改什么。
+- 小于 40 行的 edit/write diff 默认展开，大的折叠；`exit_plan_mode` 卡片的计划用 Markdown 渲染。
+- 主包从 ~370KB 涨到 ~545KB（react-markdown + remark-gfm + diff），以后可以把 Markdown 也懒加载。
+
 **第四批：效率**
 - slash 弹层：输入 `/` 时弹出，数据来自 `session.slashCommands`，客户端自己处理 `/help`、`/clear`。
 - 快捷键：⌘K 新建会话，Esc 中止。
