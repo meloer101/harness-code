@@ -17,7 +17,8 @@
  *  - **Run lifecycle.** `run_start` / `run_end` / `run_error` bracket each run.
  *  - **Pending ask/plan.** Live on the host, not the socket, so a reload
  *    mid-prompt shows the prompt again; the first answer wins and every client
- *    gets `resolved`; abort settles a pending ask/plan as a deny.
+ *    gets `resolved`; abort settles a pending ask/plan as a deny. Parallel
+ *    tool calls ask concurrently; those asks queue and are shown one at a time.
  *  - **Slash handling.** `/compact`, `/plan`, and MCP prompts are resolved
  *    server-side so every client behaves the same.
  */
@@ -98,7 +99,12 @@ export class SessionHost {
   #busy = false;
   #currentRunId: string | undefined;
 
-  #pendingAsk: PendingAsk | null = null;
+  /**
+   * Outstanding permission asks, oldest first. Parallel tool calls ask
+   * concurrently, but clients see one at a time: only the head has been
+   * announced (`ask` event / snapshot); the next is announced when it settles.
+   */
+  readonly #asks: PendingAsk[] = [];
   #pendingPlan: PendingPlan | null = null;
 
   // Delta coalescing buffer: a run of same-typed deltas awaiting flush.
@@ -115,6 +121,15 @@ export class SessionHost {
     this.#lastMode = session.mode;
     this.id = session.id;
     this.#modelRef = modelRef;
+    // Startup notices (skills, MCP, session-start…) are emitted while
+    // `AgentSession.create` runs — before the id is known — so their frames
+    // were stamped with an empty sessionId. Backfill it so a replay from seq 0
+    // routes them to the right session.
+    for (const entry of this.#ring) {
+      if (entry.frame.t === 'evt' && entry.frame.sessionId === '') {
+        entry.frame = { ...entry.frame, sessionId: this.id };
+      }
+    }
   }
 
   #requireSession(): AgentSession {
@@ -126,6 +141,11 @@ export class SessionHost {
 
   get running(): boolean {
     return this.#busy;
+  }
+
+  /** The ask clients currently see — the head of the queue. */
+  get #pendingAsk(): PendingAsk | null {
+    return this.#asks[0] ?? null;
   }
 
   get pending(): boolean {
@@ -171,20 +191,19 @@ export class SessionHost {
   }): Promise<PermissionDecision> =>
     new Promise<PermissionDecision>((resolve) => {
       const askId = randomUUID();
-      this.#pendingAsk = { askId, toolName: req.toolName, input: req.input, reason: req.reason, resolve };
-      this.#emit({
-        type: 'ask',
-        askId,
-        toolName: req.toolName,
-        input: req.input,
-        reason: req.reason,
-      });
+      this.#asks.push({ askId, toolName: req.toolName, input: req.input, reason: req.reason, resolve });
+      if (this.#asks.length === 1) this.#announceAsk();
       req.signal?.addEventListener(
         'abort',
         () => {
-          // Only settle if this exact ask is still outstanding.
-          if (this.#pendingAsk?.askId !== askId) return;
-          this.#settleAsk('abort', { decision: 'deny', reason: 'Aborted' });
+          const i = this.#asks.findIndex((a) => a.askId === askId);
+          if (i === -1) return; // already settled
+          if (i === 0) {
+            this.#settleAsk('abort', { decision: 'deny', reason: 'Aborted' });
+          } else {
+            // Never announced — drop it quietly.
+            this.#asks.splice(i, 1)[0]!.resolve({ decision: 'deny', reason: 'Aborted' });
+          }
         },
         { once: true },
       );
@@ -219,12 +238,19 @@ export class SessionHost {
     this.#emit({ type: 'resolved', requestId: planId, by: 'user' });
   }
 
+  /** Settle the head ask, then announce the next queued one (if any). */
   #settleAsk(by: 'user' | 'abort', decision: PermissionDecision): void {
-    const p = this.#pendingAsk;
+    const p = this.#asks.shift();
     if (!p) return;
-    this.#pendingAsk = null;
     p.resolve(decision);
     this.#emit({ type: 'resolved', requestId: p.askId, by });
+    this.#announceAsk();
+  }
+
+  #announceAsk(): void {
+    const head = this.#pendingAsk;
+    if (!head) return;
+    this.#emit({ type: 'ask', askId: head.askId, toolName: head.toolName, input: head.input, reason: head.reason });
   }
 
   // -- control --------------------------------------------------------------
@@ -299,6 +325,8 @@ export class SessionHost {
 
   /** Abort the in-flight run; settle any pending ask/plan as a deny. */
   abort(): void {
+    // Queued asks were never announced: settle them silently, then the head.
+    for (const queued of this.#asks.splice(1)) queued.resolve({ decision: 'deny', reason: 'Aborted' });
     if (this.#pendingAsk) this.#settleAsk('abort', { decision: 'deny', reason: 'Aborted' });
     if (this.#pendingPlan) {
       const p = this.#pendingPlan;

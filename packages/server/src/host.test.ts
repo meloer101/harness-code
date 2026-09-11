@@ -191,6 +191,72 @@ describe('SessionHost', () => {
     expect(host.pending).toBe(false);
   });
 
+  it('stamps startup notices (emitted before attach) with the session id', async () => {
+    const { host } = await makeHost([{ text: 'hi' }]);
+    const early = host.since(0);
+    expect(early.length).toBeGreaterThan(0);
+    for (const f of early) expect(f).toMatchObject({ t: 'evt', sessionId: host.id });
+  });
+
+  it('queues concurrent asks from parallel tool calls and shows them one at a time', async () => {
+    const { host, events } = await makeHost(
+      [
+        {
+          toolCalls: [
+            { name: 'write', input: { path: 'a.txt', content: 'a' } },
+            { name: 'write', input: { path: 'b.txt', content: 'b' } },
+          ],
+        },
+        { text: 'both written' },
+      ],
+      { mode: 'ask' },
+    );
+    const settled = runSettled(host);
+    host.send('go');
+
+    const first = await firstEvent(host, 'ask');
+    // Give the second tool's ask time to arrive: it must queue, not replace.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(events().filter((e) => e.type === 'ask')).toHaveLength(1);
+    expect((await host.snapshot()).pendingAsk?.askId).toBe(first.askId);
+
+    const secondP = firstEvent(host, 'ask');
+    host.answerAsk(first.askId, 'once');
+    const second = await secondP;
+    expect(second.askId).not.toBe(first.askId);
+    expect((second.input as { path: string }).path).not.toBe((first.input as { path: string }).path);
+    host.answerAsk(second.askId, 'once');
+
+    const end = await settled;
+    expect(end).toMatchObject({ type: 'run_end', stopReason: 'end_turn' });
+    const ends = events().filter((e) => e.type === 'tool_call_end') as Array<{ result: { isError?: boolean } }>;
+    expect(ends).toHaveLength(2);
+    expect(ends.every((e) => !e.result.isError)).toBe(true);
+  });
+
+  it('abort settles the shown ask and every queued one', async () => {
+    const { host, events } = await makeHost(
+      [
+        {
+          toolCalls: [
+            { name: 'write', input: { path: 'a.txt', content: 'a' } },
+            { name: 'write', input: { path: 'b.txt', content: 'b' } },
+          ],
+        },
+        { text: 'unused' },
+      ],
+      { mode: 'ask' },
+    );
+    const settled = runSettled(host);
+    host.send('go');
+    await firstEvent(host, 'ask');
+    await new Promise((r) => setTimeout(r, 50));
+    host.abort();
+    await settled; // would hang forever if a queued ask were left dangling
+    expect(host.pending).toBe(false);
+    expect(events().filter((e) => e.type === 'ask')).toHaveLength(1);
+  });
+
   it('broadcasts a mode event when plan approval switches the mode, once per change', async () => {
     const { host, events } = await makeHost(
       [
