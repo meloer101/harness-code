@@ -81,6 +81,7 @@ export class SessionSync {
         this.#models.set(id, new SessionModel(snapshot));
         this.#publish(id);
         await this.#subscribe(id);
+        void this.#loadSlash(id);
       } catch (err) {
         this.#fail(err);
       } finally {
@@ -100,6 +101,7 @@ export class SessionSync {
       this.#models.set(snapshot.id, new SessionModel({ ...snapshot, lastSeq: 0 }));
       this.#publish(snapshot.id);
       await this.#subscribe(snapshot.id);
+      void this.#loadSlash(snapshot.id);
       this.#scheduleListRefresh();
       return snapshot.id;
     } catch (err) {
@@ -136,6 +138,20 @@ export class SessionSync {
     return this.#run(
       this.rpc.call('plan.answer', { sessionId, planId, approved, ...(feedback ? { feedback } : {}) }),
     );
+  }
+
+  /** MCP prompt commands for the `/` menu; absent until loaded, never fatal. */
+  async #loadSlash(id: string): Promise<void> {
+    try {
+      const commands = await this.rpc.call('session.slashCommands', { id });
+      this.#store.setState((s) => ({ slash: { ...s.slash, [id]: commands } }));
+    } catch {
+      // The menu falls back to the built-in commands.
+    }
+  }
+
+  setHelpOpen(open: boolean): void {
+    this.#store.setState({ helpOpen: open });
   }
 
   dismissError(): void {

@@ -102,7 +102,7 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 
 ## M5：UI（按优先级分批）
 
-**第一批已完成**（另外提前做了极简版 `PendingDock`：ask 的 once/always/deny 和 plan 的 approve/reject，不然 mock 剧本会卡在第一个 ask；反馈输入、y/a/n 快捷键、markdown 渲染留给第二批）。
+**第一批已完成**（`PendingDock` 的极简版提前到第一批做了，不然 mock 剧本会卡在第一个 ask）。
 
 **第一批：跑通一轮对话**
 - `AppShell`：左侧 `SessionSidebar`（新建会话、列表、徽标、当前选中），右侧 `SessionView`。
@@ -137,10 +137,17 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 - 小于 40 行的 edit/write diff 默认展开，大的折叠；`exit_plan_mode` 卡片的计划用 Markdown 渲染。
 - 主包从 ~370KB 涨到 ~545KB（react-markdown + remark-gfm + diff），以后可以把 Markdown 也懒加载。
 
+**第二批已完成**。实现备注：ask/plan 出现时 dock 会抢焦点（否则按键都进了 composer 的 textarea），快捷键和 TUI 一致：ask 是 y/a/n、Esc 等于 deny，plan 是 y/n、Esc 等于 reject；在反馈框里打字时快捷键不生效。反馈文字随 deny / reject 一起发给模型。
+
 **第四批：效率**
 - slash 弹层：输入 `/` 时弹出，数据来自 `session.slashCommands`，客户端自己处理 `/help`、`/clear`。
 - 快捷键：⌘K 新建会话，Esc 中止。
 - 深浅色主题跟随系统。
+
+**第四批已完成**。实现备注：
+- `/` 菜单的命令分三类（`lib/slash.ts`）：客户端的 `/help`、`/clear`，服务端的 `/compact`、`/plan`，以及 `session.slashCommands` 返回的 MCP prompt；菜单里标了来源。只有「行首一个 `/token`、还没打空格」时才弹出，开始写参数就收起。
+- `/help` 弹面板，`/clear` 等于新建会话，两者都不发到服务端。
+- 全局键在 `App`：⌘K/Ctrl+K 新建会话，Esc 中止当前运行。`/` 菜单自己吞掉 Esc（先关菜单），有待审批时 dock 也先吞掉 Esc（按 deny 处理），所以不会误中止。
 
 ## M6：收尾
 

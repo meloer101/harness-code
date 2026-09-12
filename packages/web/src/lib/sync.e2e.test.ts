@@ -20,6 +20,16 @@ import type { SocketLike } from './rpc';
 import type { AppState } from './store';
 import { SessionSync } from './sync';
 
+const emptyState = (): AppState => ({
+  status: 'closed',
+  info: null,
+  sessions: [],
+  views: {},
+  slash: {},
+  error: null,
+  helpOpen: false,
+});
+
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
   for (const fn of cleanups.splice(0).reverse()) await fn();
@@ -36,7 +46,7 @@ async function boot(): Promise<{ server: RunningServer; cwd: string }> {
 }
 
 function tab(server: RunningServer) {
-  const store = createStore<AppState>(() => ({ status: 'closed', info: null, sessions: [], views: {}, error: null }));
+  const store = createStore<AppState>(() => emptyState());
   const origin = `http://127.0.0.1:${server.port}`;
   const sync = new SessionSync({
     url: `ws://127.0.0.1:${server.port}/ws`,
@@ -137,7 +147,7 @@ describe('SessionSync ↔ hc web --mock', () => {
 
   it('reports a bad token as unauthorized without retrying', async () => {
     const { server } = await boot();
-    const store = createStore<AppState>(() => ({ status: 'closed', info: null, sessions: [], views: {}, error: null }));
+    const store = createStore<AppState>(() => emptyState());
     const sync = new SessionSync({
       url: `ws://127.0.0.1:${server.port}/ws`,
       token: 'nope',

@@ -1,21 +1,38 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 import { Composer } from '@/components/Composer';
 import { PendingDock } from '@/components/PendingDock';
 import { SessionHeader } from '@/components/SessionHeader';
 import { Transcript } from '@/components/Transcript';
+import { allCommands } from '@/lib/slash';
 import { useAppStore } from '@/lib/store';
 import { useSync } from '@/lib/syncContext';
 
-export function SessionView({ id }: { id: string }) {
+export function SessionView({ id, onNewSession }: { id: string; onNewSession: () => void }) {
   const sync = useSync();
   const view = useAppStore((s) => s.views[id]);
   const connected = useAppStore((s) => s.status === 'open');
+  const mcp = useAppStore((s) => s.slash[id]);
+  const commands = useMemo(() => allCommands(mcp ?? []), [mcp]);
 
   useEffect(() => {
     void sync.open(id);
   }, [sync, id]);
+
+  /** `/help` and `/clear` never reach the server — see lib/slash.ts. */
+  const send = async (text: string): Promise<boolean> => {
+    const command = /^\/(\S+)\s*$/.exec(text.trim())?.[1];
+    if (command === 'help') {
+      sync.setHelpOpen(true);
+      return true;
+    }
+    if (command === 'clear') {
+      onNewSession();
+      return true;
+    }
+    return sync.send(id, text);
+  };
 
   if (!view) {
     return (
@@ -37,7 +54,8 @@ export function SessionView({ id }: { id: string }) {
           sessionId={id}
           running={view.running}
           disabled={!connected}
-          onSend={(text) => sync.send(id, text)}
+          commands={commands}
+          onSend={send}
           onAbort={() => void sync.abort(id)}
         />
       </div>

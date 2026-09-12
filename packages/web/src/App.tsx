@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Loader2, MessageSquarePlus, WifiOff, X } from 'lucide-react';
 
+import { HelpDialog } from '@/components/HelpDialog';
 import { SessionSidebar } from '@/components/SessionSidebar';
 import { SessionView } from '@/components/SessionView';
 import { Button } from '@/components/ui/button';
 import { parseRoute, routeToHash } from '@/lib/route';
 import type { Route } from '@/lib/route';
+import { allCommands } from '@/lib/slash';
 import { useAppStore } from '@/lib/store';
 import { useSync } from '@/lib/syncContext';
 
@@ -29,16 +31,48 @@ export function App() {
     if (id) window.location.hash = routeToHash({ kind: 'session', id });
   };
 
+  // Global keys: new session anywhere, Esc stops the active run. The composer's
+  // `/` menu swallows its own Escape, so it can't abort by accident.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        void newSession();
+        return;
+      }
+      if (e.key === 'Escape' && activeId) {
+        const view = useAppStore.getState().views[activeId];
+        if (view?.running) void sync.abort(activeId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   return (
     <div className="flex h-full">
       <SessionSidebar activeId={activeId} onNew={() => void newSession()} />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         <ErrorBanner />
-        {activeId ? <SessionView key={activeId} id={activeId} /> : <Home onNew={() => void newSession()} />}
+        {activeId ? (
+          <SessionView key={activeId} id={activeId} onNewSession={() => void newSession()} />
+        ) : (
+          <Home onNew={() => void newSession()} />
+        )}
       </main>
+      <Help />
     </div>
   );
+}
+
+function Help() {
+  const sync = useSync();
+  const open = useAppStore((s) => s.helpOpen);
+  const mcp = useAppStore((s) => (s.status === 'open' ? s.slash : null));
+  if (!open) return null;
+  const commands = allCommands(Object.values(mcp ?? {})[0] ?? []);
+  return <HelpDialog commands={commands} onClose={() => sync.setHelpOpen(false)} />;
 }
 
 function Home({ onNew }: { onNew: () => void }) {
