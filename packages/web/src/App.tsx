@@ -78,12 +78,23 @@ function Help() {
 function Home({ onNew }: { onNew: () => void }) {
   const connected = useAppStore((s) => s.status === 'open');
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-      <p>No session selected</p>
-      <Button onClick={onNew} disabled={!connected}>
+    <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
+      <div className="flex flex-col items-center gap-2">
+        <span className="font-serif text-[34px] font-semibold tracking-[-0.02em]">
+          hc<span className="text-brass">·</span>web
+        </span>
+        <p className="max-w-52 font-serif text-[15px] leading-relaxed text-muted-foreground italic">
+          A coding agent, bound for the browser.
+        </p>
+      </div>
+      <Button onClick={onNew} disabled={!connected} size="lg">
         <MessageSquarePlus />
         New session
       </Button>
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <kbd className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px]">⌘K</kbd>
+        starts one anywhere
+      </p>
     </div>
   );
 }
@@ -93,14 +104,14 @@ function ConnectionBanner() {
   if (status === 'open' || status === 'closed') return null;
   if (status === 'unauthorized') {
     return (
-      <div className="flex items-center gap-2 border-b bg-red-500/10 px-4 py-2 text-xs text-red-600 dark:text-red-400">
+      <div className="flex items-center gap-2 border-b border-destructive/25 bg-destructive/10 px-4 py-2 text-xs text-destructive">
         <WifiOff className="size-3.5" />
         The server rejected this page's token — it has probably restarted. Open the URL that <code>hc web</code> printed.
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-2 border-b bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+    <div className="flex items-center gap-2 border-b border-brass/25 bg-brass-subtle/60 px-4 py-2 text-xs text-brass-strong">
       <Loader2 className="size-3.5 animate-spin" />
       {status === 'connecting' ? 'Connecting…' : 'Connection lost — reconnecting…'}
     </div>
@@ -112,9 +123,14 @@ function ErrorBanner() {
   const error = useAppStore((s) => s.error);
   if (!error) return null;
   return (
-    <div className="flex items-center gap-2 border-b bg-red-500/10 px-4 py-2 text-xs text-red-600 dark:text-red-400">
+    <div className="flex items-center gap-2 border-b border-destructive/25 bg-destructive/10 px-4 py-2 text-xs text-destructive">
       <span className="flex-1">{error}</span>
-      <button type="button" onClick={() => sync.dismissError()} aria-label="Dismiss">
+      <button
+        type="button"
+        onClick={() => sync.dismissError()}
+        aria-label="Dismiss"
+        className="rounded p-0.5 transition-colors hover:bg-destructive/10"
+      >
         <X className="size-3.5" />
       </button>
     </div>

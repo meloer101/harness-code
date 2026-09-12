@@ -72,8 +72,8 @@ function getHighlighter(): Promise<HighlighterCore> {
     const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, light, dark] = await Promise.all([
       import('shiki/core'),
       import('shiki/engine/javascript'),
-      import('shiki/dist/themes/github-light.mjs'),
-      import('shiki/dist/themes/github-dark.mjs'),
+      import('shiki/dist/themes/rose-pine-dawn.mjs'),
+      import('shiki/dist/themes/rose-pine-moon.mjs'),
     ]);
     return createHighlighterCore({
       themes: [light.default, dark.default],
@@ -102,7 +102,7 @@ export async function highlight(code: string, lang: string | undefined): Promise
     await ready;
     return h.codeToHtml(code, {
       lang: name,
-      themes: { light: 'github-light', dark: 'github-dark' },
+      themes: { light: 'rose-pine-dawn', dark: 'rose-pine-moon' },
       defaultColor: false,
     });
   } catch {

@@ -109,7 +109,7 @@ export function Composer({
   return (
     <div className="relative">
       {menuOpen && <SlashMenu commands={matches} active={active} onPick={complete} />}
-      <div className="flex items-end gap-2 rounded-xl border bg-background p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/40">
+      <div className="flex items-end gap-2 rounded-xl border bg-card p-2 shadow-sm transition-shadow focus-within:border-primary/45 focus-within:shadow-md focus-within:ring-2 focus-within:ring-primary/25">
         <textarea
           ref={ref}
           rows={1}

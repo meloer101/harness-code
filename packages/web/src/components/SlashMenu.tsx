@@ -29,7 +29,7 @@ export function SlashMenu({
   if (commands.length === 0) return null;
 
   return (
-    <ul className="absolute bottom-full left-0 z-10 mb-2 max-h-64 w-full overflow-y-auto rounded-xl border bg-popover p-1 shadow-lg">
+    <ul className="absolute bottom-full left-0 z-10 mb-2 max-h-64 w-full overflow-y-auto rounded-xl border bg-popover p-1 shadow-xl">
       {commands.map((c, i) => (
         <li
           key={`${c.source}:${c.name}`}
@@ -40,13 +40,15 @@ export function SlashMenu({
             onPick(c);
           }}
           className={cn(
-            'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm',
+            'flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
             i === active && 'bg-accent text-accent-foreground',
           )}
         >
-          <span className="font-mono">/{c.name}</span>
+          <span className="font-mono text-[13px] text-primary">/{c.name}</span>
           <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{c.hint}</span>
-          <span className="shrink-0 text-[10px] text-muted-foreground/70 uppercase">{SOURCE_LABEL[c.source]}</span>
+          <span className="shrink-0 rounded border bg-muted/60 px-1 font-mono text-[9px] tracking-wide text-muted-foreground uppercase">
+            {SOURCE_LABEL[c.source]}
+          </span>
         </li>
       ))}
     </ul>

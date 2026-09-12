@@ -63,7 +63,7 @@ export function PendingDock({ view }: { view: SessionViewState }) {
   );
 
   const Key = ({ children }: { children: string }) => (
-    <kbd className="ml-1 rounded border px-1 font-mono text-[10px] opacity-70">{children}</kbd>
+    <kbd className="ml-1 rounded border bg-muted/60 px-1 font-mono text-[10px] opacity-70">{children}</kbd>
   );
 
   if (pendingAsk && askId) {
@@ -73,10 +73,10 @@ export function PendingDock({ view }: { view: SessionViewState }) {
         ref={ref}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-sm outline-none"
+        className="animate-rise rounded-xl border border-brass/40 bg-brass-subtle/60 p-3 text-sm shadow-xs outline-none"
       >
         <div className="flex items-center gap-2 font-medium">
-          <ShieldQuestion className="size-4 text-amber-500" />
+          <ShieldQuestion className="size-4 text-brass" />
           Allow <span className="font-mono">{pendingAsk.toolName}</span>?
         </div>
         {preview && <div className="mt-2">{preview}</div>}
@@ -103,10 +103,10 @@ export function PendingDock({ view }: { view: SessionViewState }) {
         ref={ref}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="rounded-xl border border-sky-500/40 bg-sky-500/5 p-3 text-sm outline-none"
+        className="animate-rise rounded-xl border border-primary/35 bg-primary/[0.04] p-3 text-sm shadow-xs outline-none"
       >
         <div className="flex items-center gap-2 font-medium">
-          <ClipboardList className="size-4 text-sky-500" />
+          <ClipboardList className="size-4 text-primary" />
           {pendingPlan.title || 'Plan ready for review'}
         </div>
         <div className="mt-2 max-h-72 overflow-auto rounded-md bg-muted/60 px-3 py-2">

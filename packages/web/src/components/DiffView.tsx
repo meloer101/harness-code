@@ -15,8 +15,8 @@ export function DiffView({ diff, className }: { diff: LineDiff; className?: stri
             <tr
               key={i}
               className={cn(
-                line.kind === 'add' && 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300',
-                line.kind === 'del' && 'bg-red-500/10 text-red-800 dark:text-red-300',
+                line.kind === 'add' && 'bg-success/10 text-success',
+                line.kind === 'del' && 'bg-destructive/10 text-destructive',
               )}
             >
               <td className="w-5 px-2 text-center align-top text-muted-foreground select-none">
@@ -37,9 +37,9 @@ export function DiffView({ diff, className }: { diff: LineDiff; className?: stri
 export function DiffStat({ diff }: { diff: LineDiff }) {
   return (
     <span className="shrink-0 font-mono text-[11px]">
-      {diff.added > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{diff.added}</span>}
+      {diff.added > 0 && <span className="text-success">+{diff.added}</span>}
       {diff.added > 0 && diff.removed > 0 && ' '}
-      {diff.removed > 0 && <span className="text-red-600 dark:text-red-400">−{diff.removed}</span>}
+      {diff.removed > 0 && <span className="text-destructive">−{diff.removed}</span>}
     </span>
   );
 }

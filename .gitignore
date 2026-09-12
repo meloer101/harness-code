@@ -26,3 +26,6 @@ evals/harbor/.jobs/
 # stray dataset export if `harbor dataset download` is run without --cache
 /terminal-bench-2/
 mock-demo.txt
+
+# design-skill live preview working state
+.impeccable/

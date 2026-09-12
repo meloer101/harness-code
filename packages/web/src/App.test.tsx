@@ -25,7 +25,7 @@ afterEach(() => {
 describe('App', () => {
   it('shows the empty state on the home route', () => {
     renderApp();
-    expect(screen.getByText('No session selected')).toBeTruthy();
+    expect(screen.getByText(/bound for the browser/)).toBeTruthy();
   });
 
   it('shows the reconnecting banner while the socket is down', () => {

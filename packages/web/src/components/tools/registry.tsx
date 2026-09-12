@@ -44,7 +44,7 @@ function Output({ tool }: { tool: ToolItem }) {
     <pre
       className={cn(
         'max-h-80 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap',
-        tool.result?.isError && 'text-red-600 dark:text-red-400',
+        tool.result?.isError && 'text-destructive',
       )}
     >
       {content}
@@ -152,9 +152,9 @@ const renderers: Record<string, Renderer> = {
           {todos.map((t, i) => (
             <li key={t.id ?? i} className="flex items-start gap-2">
               {t.status === 'completed' ? (
-                <CheckCircle2 className="mt-px size-3.5 shrink-0 text-emerald-500" />
+                <CheckCircle2 className="mt-px size-3.5 shrink-0 text-success" />
               ) : t.status === 'in_progress' ? (
-                <CircleDot className="mt-px size-3.5 shrink-0 text-sky-500" />
+                <CircleDot className="mt-px size-3.5 shrink-0 text-primary" />
               ) : (
                 <Circle className="mt-px size-3.5 shrink-0 text-muted-foreground" />
               )}
