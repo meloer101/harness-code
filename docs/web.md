@@ -6,7 +6,10 @@ a later Electron shell loads the same web bundle and embeds the same server.
 Reference architecture: t3code (`apps/server` + `apps/web` + `apps/desktop`),
 opencode (`packages/server` + `packages/app` + `packages/desktop`).
 
-Status: design, not yet implemented. Build plan: [web-frontend.md](web-frontend.md).
+Status: **implemented** (2026-09-12). The frames, events, methods, and security
+rules below are what shipped; where reality diverged from this design it is
+recorded under [As built](#as-built). Build plan and per-milestone notes:
+[web-frontend.md](web-frontend.md).
 
 ## What core already gives us
 
@@ -220,6 +223,46 @@ packages/web        React 19 + Vite + Tailwind 4 — deps: protocol
 packages/cli        + `hc web [--port]`: start server, open browser
 packages/desktop    later: Electron main embeds server, loads web
 ```
+
+## As built
+
+Everything above holds. What this design did not anticipate, found while
+building and while running the thing against a real model:
+
+- **Concurrent asks.** Parallel tool calls ask concurrently, so "the pending
+  ask" is not one slot: the host kept a single one, the second overwrote the
+  first, and the first tool waited forever. `SessionHost` now queues asks and
+  announces one at a time — the wire protocol is unchanged, since clients still
+  only ever see one pending ask.
+- **Startup notices predate the session id.** Notices emitted during
+  `AgentSession.create` (skills, MCP status, `session-start`) are stamped with
+  an empty `sessionId`; the host backfills it on attach, and a client that has
+  just created a session subscribes from `sinceSeq: 0` so they replay — a
+  snapshot carries no notices.
+- **Mode can change without a client asking.** Approving a plan flips the mode
+  inside the session, announced only as a `mode-changed` notice. The host turns
+  that notice into the `mode` event clients key their mode picker on.
+- **Mid-run snapshots depend on the recorder.** `SessionSnapshot.transcript`
+  comes from `loadTranscript`, which reads what the recorder has written; the
+  loop records each message as it commits, so a reload during a permission ask
+  shows the turn so far. With the recorder off (as `--mock` originally was) the
+  snapshot only sees finished turns, so `--mock` now records to a throwaway
+  agent dir.
+- **A tool's card can precede its `tool_call_start`.** The assistant message
+  (`tool_use` included) is recorded before the permission ask, but
+  `tool_call_start` only fires once the ask is answered. A client that opens
+  mid-run therefore has the card from the snapshot already; it updates that one
+  rather than adding a second (`packages/web/src/lib/sessionModel.ts`).
+- **`z.void()` rejects `null`.** No-arg methods (`server.info`, `session.list`)
+  must omit `params` entirely rather than sending `null`.
+- **Slash handling is split.** `/compact`, `/plan`, and MCP prompts are
+  server-side as designed; `/help` and `/clear` never leave the browser.
+- **Static serving needs cache headers.** `index.html` is `no-cache` and
+  fingerprinted `assets/` are `immutable`, or a rebuilt bundle keeps loading
+  the old entry point.
+- **CSP shapes the client's dependencies.** `script-src 'self'` blocks
+  WebAssembly compilation, so syntax highlighting uses Shiki's JavaScript regex
+  engine rather than the default Oniguruma WASM build.
 
 ## Out of scope for v1
 

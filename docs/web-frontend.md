@@ -149,10 +149,15 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 - `/help` 弹面板，`/clear` 等于新建会话，两者都不发到服务端。
 - 全局键在 `App`：⌘K/Ctrl+K 新建会话，Esc 中止当前运行。`/` 菜单自己吞掉 Esc（先关菜单），有待审批时 dock 也先吞掉 Esc（按 deny 处理），所以不会误中止。
 
-## M6：收尾
+## M6：收尾（已完成 2026-09-12）
 
-- 更新 `docs/web.md`：Status 改为已实现，记录和设计稿之间的偏差。
-- README 里加上 `hc web` 的用法。
+- 更新 `docs/web.md`：Status 改为已实现，记录和设计稿之间的偏差（"As built" 一节：并发 ask 队列、启动 notice 的 sessionId、plan 批准后的 mode 事件、中途 snapshot 依赖 recorder、`z.void()` 不收 null、slash 的前后端分工、静态缓存头、CSP 逼出的 Shiki JS 引擎）。
+- README：加 `hc web` 的用法和「The web UI」一节，Layout 补上 protocol/server/web 三个包，Roadmap 第 9 行标注 web UI 已完成。
+
+**遗留**（不阻塞 v1，按需再做）：
+- 打开旧会话要等约 5s（要完整重建 session，含 MCP 连接）；可以先用 snapshot 渲染，后台再建。
+- 压缩分隔线还没跑到过，需要一个小上下文窗口的配置来验证。
+- web 主包约 545KB，markdown 相关依赖可以改成懒加载。
 
 ---
 

@@ -14,8 +14,9 @@ sandbox, sub-agents, and an eval suite that measures whether any of it works.
 > `hc trace` / `hc stats`, see [docs/telemetry.md](docs/telemetry.md)), and the
 > eval suite (`pnpm eval` — the whole loop against fixture tasks, replayed from
 > cassettes, gated on a baseline; see [docs/eval.md](docs/eval.md)) are complete
-> and tested. The CLI/TUI polish and the docs pass are what's left — see
-> [the plan](#roadmap).
+> and tested, as is the browser UI (`hc web` — a local WebSocket server and a
+> React frontend over the same engine, see [docs/web.md](docs/web.md)). The
+> CLI/TUI polish and the docs pass are what's left — see [the plan](#roadmap).
 
 ## Why this exists
 
@@ -48,6 +49,9 @@ node packages/cli/dist/index.js agent --cwd . -m deepseek/deepseek-v4-pro --mode
 
 node packages/cli/dist/index.js trace          # replay the last session: model + tool calls, timing, cost
 node packages/cli/dist/index.js stats          # token / cost / turn totals across every recorded session
+
+# the same loop in a browser: a local server (WebSocket + HTTP) and a React UI
+node packages/cli/dist/index.js web
 ```
 
 `agent` runs the ReAct-shaped loop end to end: it streams the model's
@@ -66,6 +70,44 @@ Ctrl+D) ends it cleanly. This isn't the Ink TUI from the roadmap below —
 no panels, no slash commands — just plain text in, streamed text out,
 which is what actually makes it usable to talk to instead of re-typing a
 whole command line per message.
+
+## The web UI
+
+`hc web` is the fourth frontend over the same engine (one-shot, REPL, TUI,
+web). It starts a `node:http` server bound to `127.0.0.1`, serves the built
+React bundle, and upgrades `/ws` to a single WebSocket carrying both RPC and
+the event stream. It prints the URL it opens:
+
+```bash
+hc web                                    # serve the current directory, open a browser
+hc web --port 4317 --no-open              # fixed port, print the URL only
+hc web --mock --cwd /tmp/hc-demo          # scripted responses, no API calls
+```
+
+The URL ends in `#token=…`: a fresh 32-byte token per server start, in the
+fragment so it never reaches logs or `Referer`. The page moves it to
+`sessionStorage` and strips the hash. The handshake also checks `Origin` and
+`Host` before upgrading, so another origin can't reach a server that runs
+shell commands. Details, including what changed while building it:
+[docs/web.md](docs/web.md).
+
+What the page gives you: the session list from `.agent/sessions/` (the ones
+`hc agent` wrote included), a streamed transcript with markdown and syntax
+highlighting, tool cards per tool (diffs for `edit`/`write`, folded output for
+`bash`, checklists for `todo`), the permission prompt and plan approval docked
+above the composer with the TUI's `y`/`a`/`n` keys and an optional feedback
+note, a usage meter (tokens, cost, context share), `/` for commands, `⌘K` for
+a new session, and `Esc` to stop a run. State lives on the server, so a reload
+mid-prompt shows the prompt again and two tabs stay in sync — the first answer
+wins.
+
+Developing the UI itself needs two terminals, the Vite dev server proxying
+`/ws` back to `hc web`:
+
+```bash
+hc web --no-open --port 4317 --dev-origin http://localhost:5173 --mock
+pnpm --filter @harness-code/web dev
+```
 
 ## The compatibility layer
 
@@ -343,6 +385,9 @@ in-process mock that speaks the OAuth discovery / DCR / token dance, so
 packages/core     provider layer · agent loop · tools · context · permissions · mcp · skills · sub-agents · telemetry
 packages/cli      one-shot, scriptable entry point
 packages/tui      interactive terminal UI (Ink)
+packages/protocol frame / event / method types + zod schemas + the shared fold logic (no node deps)
+packages/server   session host, WebSocket RPC, auth, static serving — what `hc web` runs
+packages/web      browser UI: React 19 · Vite · Tailwind 4 · shadcn · zustand
 evals             benchmark tasks and fixtures
 ```
 
@@ -359,7 +404,7 @@ evals             benchmark tasks and fixtures
 | 6 | Skills and plan mode | done |
 | 7 | Sub-agents and parallelism | done |
 | 8 | Telemetry and eval suite | done |
-| 9 | CLI and TUI | |
+| 9 | CLI, TUI, and web UI | web UI done |
 | 10 | Documentation | |
 
 Full build plan, phase by phase, with the deviations from it recorded as they
