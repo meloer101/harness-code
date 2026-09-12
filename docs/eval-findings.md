@@ -225,13 +225,35 @@ the scaffold does nothing to counteract them.
   `largest-eigenval` to confirm it actually shifts when the deliverable gets
   touched.
 
-### C6. Over-engineering — no bias toward the simplest passing solution — **open**
+### C6. Over-engineering — no bias toward the simplest passing solution — **prompt fix landed, unverified**
 - **Evidence:** `largest-eigenval` chose a C extension over the one-line numpy
   call. Adding "fall back to the simplest implementation that could pass" to the
   ≥80 % budget tier (commit `6bd3055`) did **not** recover it on a re-run.
-- **Fix direction:** stronger, earlier framing ("prefer the simplest correct
-  approach; only optimise if tests pass and time remains"), or a scaffold that
-  requires a passing baseline before optimisation.
+- **Diagnosis of why that attempt failed:** wrong timing and wrong kind of
+  instruction. The 80%-budget nudge only fires after the model is already deep
+  into the complex approach — sunk cost by then, a late reminder can't undo it.
+  It was also phrased as an abstract preference ("prefer simplest"), which a
+  model can always rationalize past ("this case really does need it"), rather
+  than a concrete sequencing rule it has to follow before committing to
+  anything.
+- **Fix landed (2026-09-12):** extended the `<working_style>` block in
+  `AGENT_CONVENTIONS` (`prompt.ts`) with an upfront rule, not a late reminder:
+  "before implementing anything non-trivial, check whether a standard library
+  call or a few lines of straightforward code already does what's needed — try
+  that first and verify it; only reach for something more elaborate once the
+  simple version has demonstrably fallen short." This targets the *timing*
+  problem (before the model commits, not after) and the *framing* problem (a
+  step to follow, not a preference to weigh).
+- **Not yet verified.** This is a second attempt at the same failure mode the
+  first attempt didn't fix — no reason yet to believe it works better beyond
+  the timing/framing argument above. Needs a Harbor re-run on `largest-eigenval`
+  specifically before this can be marked done rather than "landed, unverified."
+  Local eval cassettes are intentionally **not** re-recorded yet (this second
+  `AGENT_CONVENTIONS` change since the C4/C5 landing again invalidates their
+  hashed request key) — left stale until the next real-model validation pass,
+  per the user's call to hold off on further spend for now. Expect
+  `evals/src/harness.test.ts`'s two replay-based tests to fail until then; this
+  is the known, accepted state, not a regression.
 
 ### C7. Fussing over trivial details near the wall — **open (symptom of C1)**
 - **Evidence:** `count-dataset-tokens` spent its last 3 turns (t38–40) on whether
@@ -292,7 +314,7 @@ Roughly, highest leverage first:
 3. ✅ **A6 loop-level retry of retryable ProviderErrors** — removes the "one transient blip ends the run" failure.
 4. ✅ **B1 headless observability** — not a capability fix, but makes every future eval debuggable without re-running.
 5. **D1 native Anthropic** (or a blessed OpenRouter path) — required before any Claude-model benchmarking.
-6. **C6 simplicity bias** / **D3 nudge regression** — the `<finishing>` block already says "prefer the simplest approach" and a separate 80%-budget-tier nudge tried similar wording without recovering `largest-eigenval` (commit `6bd3055`); no new prompt change made here — see the note above about not stacking more untested wording on a case that already resisted one attempt. Needs a Harbor re-run to see whether C1/C4/C5 landing changes the picture before trying more C6-specific wording.
+6. ✅ **C6 simplicity bias** (`<working_style>` upfront try-simple-first rule, 2026-09-12) / **D3 nudge regression** — landed as a second attempt, deliberately different from the first (see C6 above: earlier timing, a concrete rule instead of an abstract preference). **Unverified** — local cassettes intentionally left un-re-recorded for now; needs a Harbor re-run on `largest-eigenval` to know if it actually works, given the first attempt at this same failure mode didn't.
 
 > See also [runtime-learnings.md](runtime-learnings.md) (2026-09-10): a comparison with Codex / opencode /
 > hermes-agent that found four more runtime defects (tool calls reordered within a turn — reproduced;
