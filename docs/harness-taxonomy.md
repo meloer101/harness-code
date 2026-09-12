@@ -59,8 +59,8 @@ Nine categories, chosen to (a) partition cleanly — every subsystem has one cle
 | 12 | Edit-preview docs/code discrepancy | **G** Observability (doc hygiene) | F (the actual UI code lives here) | Low — **verified already fixed in code since commit `f570301`**; pending refactor was a half-finished regression, now fixed — **DONE 2026-09-12** | S (turned out to include one real M test-fix, still small) | Done: corrected the stale TODO line in `docs/web-frontend.md`; found the pending diff/markdown lazy-loading refactor (`registry.tsx`, `diffPanels.tsx`, `Markdown.tsx`, `MarkdownBody.tsx`) was breaking 4/8 tests in the already-committed `render.test.tsx` (assertions ran before the `Suspense` boundary resolved); fixed the test file to `await` lazy resolution and committed the whole batch together, now green (63/63 in `packages/web`). Note: `Transcript.test.tsx` (gap #11's concern) and `packages/server/src/registry.test.ts` (unrelated server-side batch) were left untouched — out of scope for this gap. |
 | 13 | No committed runner for sub-agent / native-vs-prompt tool-calling ablations | **G** Observability & Eval | H (instrument needed to trust H conclusions) | Medium — blocks measuring two architecturally significant knobs | M | Wire the existing harness flags into a runner script under `evals/` that sweeps both dimensions against the cassette suite, and periodically a small Harbor subset, writing results alongside `baseline.json`. |
 | 14 | Full 89-task Harbor benchmark incomplete (18/89 run) | **G** Observability & Eval | — | Medium — capability numbers are provisional, risk of overclaiming | L (budget/time, not engineering) | Schedule/fund the remaining 71 tasks; until then, label all capability claims "18/89 provisional" everywhere cited. |
-| 15 | `.gitignore` parser doesn't handle negation (`!`) or character classes | **C** Tool System & Execution | I (same risk class as the 639%-blowup incident) | Low–Medium — negation patterns are common enough to silently re-admit a blowup | S–M | Replace the hand-rolled ignore-file parser in the grep tool with a well-tested library (e.g. `ignore` on npm) instead of extending it feature-by-feature. |
-| 16 | Errors before an output sink exists exit via plain text, not structured JSON | **I** Operational Hardening | G (breaks headless/automation progress-JSON consumers for this error class) | Low–Medium — narrow but real: `--model` typos / missing config are exactly what automation hits first | S | In the CLI entrypoint, initialize a minimal structured-output sink before argument/config validation can fail, or reorder validation to run after sink init. |
+| 15 | `.gitignore` parser doesn't handle negation (`!`) or character classes | **C** Tool System & Execution | I (same risk class as the 639%-blowup incident) | Low–Medium — negation patterns are common enough to silently re-admit a blowup — **DONE 2026-09-12** | S–M | Done: replaced the hand-rolled glob-conversion parser in `packages/core/src/tools/grep.ts` with the `ignore` npm package (proper gitignore semantics, incl. negation), filtering the already-listed file set instead of pre-translating patterns into fast-glob ignore-globs. New regression test: `honours a .gitignore negation, re-admitting a file its own broader pattern excluded` (`grep.test.ts`). |
+| 16 | Errors before an output sink exists exit via plain text, not structured JSON | **I** Operational Hardening | G (breaks headless/automation progress-JSON consumers for this error class) | Low–Medium — narrow but real: `--model` typos / missing config are exactly what automation hits first — **PARTIALLY DONE 2026-09-12** | S | Done for the specific case verified: `NoModelConfiguredError` (no `--model` and no default configured) now routes through a new `failWithFormat` helper in `packages/cli/src/index.ts`, which emits the same structured `{type: "result", is_error: true}`/`{type: "error"}` shape a mid-run failure would for `--output-format json`/`stream-json`, instead of always falling back to the plain-text `fail()`. **Not yet covered**: other pre-config errors (e.g. an unknown provider name, which throws a plain `Error` from deeper in `buildSessionConfig`/`ProviderRegistry` and is still only caught by the generic `unhandledRejection` handler as plain text) — confirmed still plain-text via manual test. Broadening this to all pre-sink error paths would need touching the top-level `main()`/`unhandledRejection` handler too; left as a follow-up given the narrower, explicitly-named case is what's fixed here. |
 
 ---
 
@@ -78,10 +78,10 @@ This ordering also reflects the user's stated priorities: **(1) Correctness/Reli
 1. ~~**#2** Truncated-output detection~~ — already implemented pre-session; verified with existing tests. Residual: bounded text-continuation enhancement, optional, not urgent (see gap table).
 2. ~~**#1** Tool-call reordering fix~~ — execution order was already fixed pre-session; this session found and fixed the real residual (event/log ordering within a concurrent batch) and added a regression test.
 
-### Phase 1 — Cheap hygiene, parallelizable with Phase 0
-3. **#12** Doc/commit cleanup for edit-preview (S) — trivial, resolve immediately to avoid duplicate work by another session.
-4. **#16** Structured error sink for pre-sink failures (S) — small, unblocks automation reliability.
-5. **#15** Swap grep's ignore parser for a library (S–M) — closes a proven-costly incident class before it recurs.
+### Phase 1 — Cheap hygiene, parallelizable with Phase 0 — ✅ DONE (2026-09-12)
+3. ~~**#12** Doc/commit cleanup for edit-preview~~ — done; turned up and fixed a half-finished lazy-loading refactor along the way (see §2, gap #12).
+4. ~~**#16** Structured error sink for pre-sink failures~~ — done for the `NoModelConfiguredError` case; other pre-config error paths (e.g. unknown provider name) still exit as plain text, left as a follow-up (see §2).
+5. ~~**#15** Swap grep's ignore parser for a library~~ — done; `ignore` npm package now backs `.gitignore` handling in the grep tool, with a negation regression test.
 
 ### Phase 2 — Robustness completion (still user priority #1) — ✅ DONE (2026-09-12)
 6. ~~**#3** Generalize context-exceeded mid-turn recovery~~ — already implemented pre-session; verified against code, no residual issue.
@@ -108,14 +108,14 @@ This ordering also reflects the user's stated priorities: **(1) Correctness/Reli
 
 ## 4. Quick-scan severity × effort grid
 
-**As of 2026-09-12** (post-verification; #1–#4 closed, see §2/§3):
+**As of 2026-09-12** (post-verification and Phase 0–2 work; #1–#4, #12, #15 closed, #16 partially closed — see §2/§3):
 
 | Severity | S effort | M effort | L effort |
 |---|---|---|---|
 | Critical | — | — | — |
-| High | #16 | #5 | — |
-| Medium | #2 (residual), #12, #15 | #6, #7, #8, #9, #10, #13 | #14 |
+| High | — | #5 | — |
+| Medium | #2 (residual) | #6, #7, #8, #9, #10, #13 | #14 |
 | Low | #11 | — | — |
-| Closed | #1, #3, #4 (done) | #2's critical part (done) | — |
+| Closed | #1, #3, #4, #12, #15, #16-partial (done) | #2's critical part (done) | — |
 
 (Treat this grid as a quick-scan aid — the per-gap table in §2 is authoritative.)
