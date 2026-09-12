@@ -2,8 +2,8 @@
 
 2026-09-10 · 分支 `harbor-eval-and-timeout-fix`
 
-> **状态：已实现（未提交）。** `pnpm typecheck` 通过；`pnpm test` 484 个用例中 482 通过，
-> 剩余 2 个为已知的 cassette replay 失败。端到端验证：指向不可达的本地端点
+> **状态：已实现（未提交）。** `pnpm typecheck` 通过；eval cassette 已于 2026-09-12 重录。
+> 端到端验证：指向不可达的本地端点
 > 运行 `--output-format json`，stderr 逐行输出 JSONL（notice / turn_retry / error），发生 2 次
 > 轮级重试后错误照常抛出（默认配置下约 26 秒），stdout 仍输出一个
 > `stop_reason: "error"` 的 result 对象，退出码仍为 1。
@@ -24,8 +24,7 @@
 来自 agent runtime 状况梳理与 [eval-findings.md](eval-findings.md)。本轮范围：
 
 - **做**：A6（流中途瞬断丢整轮）、B1（`--output-format json` 运行期间 stderr 零输出）。
-- **暂不做**：eval cassette 重录、Terminal-Bench 2.0 全量测评（之后再定）。
-  cassette 仍失配，`evals/src/harness.test.ts` 的 2 个 replay 失败属已知，不在本次范围。
+- **暂不做**：Terminal-Bench 2.0 全量测评（之后再定）。
 
 执行顺序：A6 → B1 → 更新相关文档状态。
 

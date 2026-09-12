@@ -194,25 +194,36 @@ the scaffold does nothing to counteract them.
   short "recent failures" digest.
 - **Confidence:** high.
 
-### C4. Scratch-file sprawl, no cleanup — **open**
+### C4. Scratch-file sprawl, no cleanup — **addressed (prompt), effect unmeasured**
 - **Evidence:** `largest-eigenval` wrote `bench.py`, `bench2.py` … `bench9.py`,
   `debug_inv.py`, `test_*.py` — a **new** file per micro-experiment rather than
   iterating one. Context ratio was only 0.03–0.08 (936k window), so this is not
   memory loss — it's a behaviour. The scratch files also pollute the workspace
   the verifier inspects (didn't cause a failure in the subset, but it's a
   latent risk).
-- **Fix direction:** prompt guidance to reuse a single scratch file / a
-  `/tmp` scratch convention; optionally a post-run cleanup of files the agent
-  created outside the task's expected outputs.
-- **Confidence:** high.
+- **Fix landed (2026-09-12):** a `<working_style>` block in `AGENT_CONVENTIONS`
+  (`prompt.ts`) — "reuse one scratch file across attempts instead of creating a
+  new one per attempt (...); remove any scratch file you created that isn't
+  part of what the task asked for."
+- **Not yet measured:** none of the 5 local eval fixtures exercise
+  multi-attempt experimentation, so the local suite passing 5/5 confirms no
+  regression, not that this actually reduces sprawl. Needs a Harbor re-run on
+  `largest-eigenval` (or a similar task) to know if it helps in practice.
+- **Confidence:** high that the behavior is real; unconfirmed that this fix works.
 
-### C5. Late commitment to the deliverable — **open (related to C1/C2)**
+### C5. Late commitment to the deliverable — **addressed (prompt), effect unmeasured**
 - **Evidence:** `largest-eigenval` — `eigen.py` (the actual deliverable) edited
   **once, at turn 35/40**. `count-dataset-tokens` — `answer.txt` first written at
   **turn 37/40**. Exploration is front-loaded, implementation back-loaded, so the
   run gets cut off mid-implementation.
-- **Fix direction:** encourage an early "make it work, then make it good" pass —
-  a rough solution to the real target file within the first third, then iterate.
+- **Fix landed (2026-09-12):** the same `<working_style>` block — "get a rough
+  version of the actual deliverable in place early — within roughly the first
+  third of the work — then spend the rest of the time refining it."
+- **Not yet measured:** same caveat as C4 — the local suite doesn't reproduce
+  this failure mode (its tasks are short enough that front-loaded exploration
+  isn't costly), so this needs a Harbor re-run on `count-dataset-tokens` /
+  `largest-eigenval` to confirm it actually shifts when the deliverable gets
+  touched.
 
 ### C6. Over-engineering — no bias toward the simplest passing solution — **open**
 - **Evidence:** `largest-eigenval` chose a C extension over the one-line numpy
@@ -228,17 +239,13 @@ the scaffold does nothing to counteract them.
 
 ---
 
-> **Eval cassettes need re-recording.** The C1 `<finishing>` prompt block changes
-> `AGENT_CONVENTIONS`, which is part of the hashed request key, so all 5 fixture
-> cassettes miss on replay. Until re-recorded, `pnpm eval` fails and
-> `evals/src/harness.test.ts`'s two replay tests fail. Fix once a DeepSeek
-> balance is available:
-> ```
-> pnpm eval --record --update-baseline    # ~$0.10, hits the real model
-> pnpm eval                               # confirm green
-> ```
-> The step-back nudge (C2/C3) is cassette-safe on its own; only the prompt
-> change forces the re-record.
+> **Eval cassettes re-recorded (2026-09-12), twice.** First after the C1
+> `<finishing>` prompt block, then again after the C4/C5 `<working_style>` block
+> — both change `AGENT_CONVENTIONS`, part of the hashed request key. Current
+> cassettes reflect the full prompt including both blocks:
+> `deepseek/deepseek-v4-flash`, 5/5 tasks pass@k, 5/5 pass@1 (avg cost
+> $0.0018–$0.0040/task). Re-record with `pnpm eval --record --update-baseline`
+> whenever the system prompt or request-key scrubbing changes materially.
 
 ---
 
@@ -280,12 +287,12 @@ the scaffold does nothing to counteract them.
 
 Roughly, highest leverage first:
 
-1. ✅ **C1 done-detection** (`<finishing>` prompt block) + ✅ **C2/C3 step-back nudge** — landed; needs a cassette re-record. These are most of the agentic gap and lift *every* model's score. *Next measurement will tell us how much.*
-2. **C4 scratch-file discipline** + the remaining half of C2 (progress signal, not just all-failed) — cheap prompt/scaffold changes.
+1. ✅ **C1 done-detection** (`<finishing>` prompt block) + ✅ **C2/C3 step-back nudge** — landed, cassettes re-recorded (2026-09-12, local 5/5 suite still passes). These are most of the agentic gap and lift *every* model's score. *Next Harbor measurement will tell us how much.*
+2. ✅ **C4 scratch-file discipline** + ✅ **C5 late commitment** (`<working_style>` prompt block, 2026-09-12) — landed, cassettes re-recorded, local suite unaffected. **Effect on the actual failure modes (largest-eigenval, count-dataset-tokens) is not yet measured** — the local fixture tasks don't reproduce them; needs a Harbor re-run to confirm. The remaining half of C2 (a real progress signal, not just all-failed) is still open.
 3. ✅ **A6 loop-level retry of retryable ProviderErrors** — removes the "one transient blip ends the run" failure.
 4. ✅ **B1 headless observability** — not a capability fix, but makes every future eval debuggable without re-running.
 5. **D1 native Anthropic** (or a blessed OpenRouter path) — required before any Claude-model benchmarking.
-6. **C6 simplicity bias** / **D3 nudge regression** — the `<finishing>` block now says "prefer the simplest approach"; re-check `largest-eigenval` on the next run.
+6. **C6 simplicity bias** / **D3 nudge regression** — the `<finishing>` block already says "prefer the simplest approach" and a separate 80%-budget-tier nudge tried similar wording without recovering `largest-eigenval` (commit `6bd3055`); no new prompt change made here — see the note above about not stacking more untested wording on a case that already resisted one attempt. Needs a Harbor re-run to see whether C1/C4/C5 landing changes the picture before trying more C6-specific wording.
 
 > See also [runtime-learnings.md](runtime-learnings.md) (2026-09-10): a comparison with Codex / opencode /
 > hermes-agent that found four more runtime defects (tool calls reordered within a turn — reproduced;
