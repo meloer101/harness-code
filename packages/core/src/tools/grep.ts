@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 
 import fg from 'fast-glob';
+import ignore from 'ignore';
 import { z } from 'zod';
 
 import { truncateHeadTail, truncateList } from '../context/truncate.js';
@@ -144,13 +145,15 @@ export async function grepWithJs(input: Input, searchPath: string): Promise<Tool
     return { content: `Invalid regular expression: ${errorMessage(err)}`, isError: true };
   }
 
-  const files = await fg(input.glob ?? '**/*', {
+  const found = await fg(input.glob ?? '**/*', {
     cwd: searchPath,
     dot: true,
     onlyFiles: true,
     absolute: true,
-    ignore: [...DEFAULT_IGNORE, ...(await gitignoreGlobs(searchPath))],
+    ignore: DEFAULT_IGNORE,
   });
+  const matcher = await gitignoreMatcher(searchPath);
+  const files = matcher ? found.filter((f) => !isGitignored(matcher, f)) : found;
 
   const matches: string[] = [];
   let hitCap = false;
@@ -189,34 +192,34 @@ export async function grepWithJs(input: Input, searchPath: string): Promise<Tool
 }
 
 /**
- * Best-effort `.gitignore` support for the JS fallback: walk up from the search
- * path, read the first `.gitignore` found, and convert its simple patterns to
- * globs. Negations and the trickier gitignore semantics are not handled — this
- * just keeps the fallback from wandering into obviously-ignored trees.
+ * Best-effort `.gitignore` support for the JS fallback: walk up from the
+ * search path and load the first `.gitignore` found through the `ignore`
+ * package, which implements real gitignore semantics (negation, character
+ * classes, directory-only patterns) instead of a hand-rolled glob conversion —
+ * a from-scratch parser previously dropped `!` lines entirely, silently
+ * re-admitting whatever they were meant to un-ignore.
  */
-async function gitignoreGlobs(searchPath: string): Promise<string[]> {
+async function gitignoreMatcher(
+  searchPath: string,
+): Promise<{ dir: string; ig: ReturnType<typeof ignore> } | undefined> {
   let dir = searchPath;
   for (let depth = 0; depth < 6; depth++) {
     try {
       const raw = await readFile(join(dir, '.gitignore'), 'utf8');
-      return raw.split('\n').flatMap(gitignoreLineToGlobs);
+      return { dir, ig: ignore().add(raw) };
     } catch {
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
   }
-  return [];
+  return undefined;
 }
 
-function gitignoreLineToGlobs(line: string): string[] {
-  let p = line.trim();
-  if (p === '' || p.startsWith('#') || p.startsWith('!')) return [];
-  const dirOnly = p.endsWith('/');
-  if (dirOnly) p = p.slice(0, -1);
-  const anchored = p.startsWith('/');
-  if (anchored) p = p.slice(1);
-  if (p === '') return [];
-  const base = anchored ? p : `**/${p}`;
-  return dirOnly ? [`${base}/**`] : [base, `${base}/**`];
+function isGitignored(
+  matcher: { dir: string; ig: ReturnType<typeof ignore> },
+  absolutePath: string,
+): boolean {
+  const rel = relative(matcher.dir, absolutePath).split(sep).join('/');
+  return rel !== '' && !rel.startsWith('..') && matcher.ig.ignores(rel);
 }

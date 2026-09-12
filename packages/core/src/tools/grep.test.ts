@@ -91,4 +91,15 @@ describe('grepWithJs', () => {
     expect(result.content).not.toContain('generated');
     expect(result.content).not.toContain('bundle');
   });
+
+  it('honours a .gitignore negation, re-admitting a file its own broader pattern excluded', async () => {
+    await writeFile(join(cwd, '.gitignore'), '*.log\n!important.log\n', 'utf8');
+    await writeFile(join(cwd, 'debug.log'), 'target here', 'utf8');
+    await writeFile(join(cwd, 'important.log'), 'target here', 'utf8');
+
+    const result = await grepWithJs({ pattern: 'target' }, cwd);
+
+    expect(result.content).toContain('important.log');
+    expect(result.content).not.toContain('debug.log');
+  });
 });
