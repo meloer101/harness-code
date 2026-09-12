@@ -6,18 +6,36 @@
  * permission dock), so an edit is reviewed as a diff, not a file path.
  */
 
-import type { ReactNode } from 'react';
+import { Suspense, lazy, type ReactNode } from 'react';
 import { CheckCircle2, Circle, CircleDot } from 'lucide-react';
 
 import { describeToolInput } from '@harness-code/core/browser';
 import type { ToolItem } from '@harness-code/protocol';
 
 import { CodeBlock } from '@/components/CodeBlock';
-import { DiffStat, DiffView } from '@/components/DiffView';
 import { Markdown } from '@/components/Markdown';
-import { editDiff, writeDiff } from '@/lib/diff';
-import { langForPath } from '@/lib/highlight';
 import { cn } from '@/lib/utils';
+
+const EditDiffPanel = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.EditDiffPanel })),
+);
+const EditDiffMeta = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.EditDiffMeta })),
+);
+const WriteDiffPanel = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.WriteDiffPanel })),
+);
+const WriteDiffMeta = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.WriteDiffMeta })),
+);
+const EditPreviewPanel = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.EditPreviewPanel })),
+);
+const WritePreviewPanel = lazy(() =>
+  import('@/components/tools/diffPanels').then((m) => ({ default: m.WritePreviewPanel })),
+);
+
+const diffFallback = <div className="px-3 py-2 text-xs text-muted-foreground">Loading diff…</div>;
 
 export interface ToolView {
   /** Header text after the tool name. */
@@ -34,8 +52,12 @@ const rec = (input: unknown): Rec => (input && typeof input === 'object' ? (inpu
 const str = (r: Rec, k: string): string | undefined => (typeof r[k] === 'string' ? (r[k] as string) : undefined);
 const num = (r: Rec, k: string): number | undefined => (typeof r[k] === 'number' ? (r[k] as number) : undefined);
 
-/** Small diffs open by default; big ones stay folded. */
+/** Small diffs open by default; big ones stay folded (line-count heuristic, no `diff` import). */
 const OPEN_DIFF_LINES = 40;
+
+function roughLineCount(...parts: string[]): number {
+  return parts.reduce((n, p) => n + p.split('\n').length, 0);
+}
 
 function Output({ tool }: { tool: ToolItem }) {
   const content = tool.result?.content;
@@ -75,32 +97,40 @@ const renderers: Record<string, Renderer> = {
   }),
 
   edit: (tool, input) => {
-    const diff = editDiff(str(input, 'oldString') ?? '', str(input, 'newString') ?? '');
+    const oldString = str(input, 'oldString') ?? '';
+    const newString = str(input, 'newString') ?? '';
     return {
       summary: <Mono>{str(input, 'path') ?? ''}</Mono>,
-      meta: <DiffStat diff={diff} />,
-      body: (
-        <>
-          <DiffView diff={diff} />
-          <ErrorOutput tool={tool} />
-        </>
+      meta: (
+        <Suspense fallback={null}>
+          <EditDiffMeta oldString={oldString} newString={newString} />
+        </Suspense>
       ),
-      defaultOpen: tool.result?.isError === true || diff.lines.length <= OPEN_DIFF_LINES,
+      body: (
+        <Suspense fallback={diffFallback}>
+          <EditDiffPanel tool={tool} oldString={oldString} newString={newString} />
+        </Suspense>
+      ),
+      defaultOpen:
+        tool.result?.isError === true || roughLineCount(oldString, newString) <= OPEN_DIFF_LINES,
     };
   },
 
   write: (tool, input) => {
-    const diff = writeDiff(str(input, 'content') ?? '');
+    const content = str(input, 'content') ?? '';
     return {
       summary: <Mono>{str(input, 'path') ?? ''}</Mono>,
-      meta: <DiffStat diff={diff} />,
-      body: (
-        <>
-          <DiffView diff={diff} />
-          <ErrorOutput tool={tool} />
-        </>
+      meta: (
+        <Suspense fallback={null}>
+          <WriteDiffMeta content={content} />
+        </Suspense>
       ),
-      defaultOpen: tool.result?.isError === true || diff.lines.length <= OPEN_DIFF_LINES,
+      body: (
+        <Suspense fallback={diffFallback}>
+          <WriteDiffPanel tool={tool} content={content} />
+        </Suspense>
+      ),
+      defaultOpen: tool.result?.isError === true || roughLineCount(content) <= OPEN_DIFF_LINES,
     };
   },
 
@@ -227,32 +257,23 @@ export function toolView(tool: ToolItem): ToolView {
 export function toolPreview(toolName: string, input: unknown): ReactNode {
   const r = rec(input);
   switch (toolName) {
-    case 'edit': {
-      const diff = editDiff(str(r, 'oldString') ?? '', str(r, 'newString') ?? '');
+    case 'edit':
       return (
-        <div className="overflow-hidden rounded-md border bg-background">
-          <div className="flex items-center gap-2 border-b px-3 py-1.5 font-mono text-xs">
-            <span className="min-w-0 flex-1 truncate">{str(r, 'path')}</span>
-            {r['replaceAll'] === true && <span className="text-[10px] text-muted-foreground">replace all</span>}
-            <DiffStat diff={diff} />
-          </div>
-          <DiffView diff={diff} className="max-h-64" />
-        </div>
+        <Suspense fallback={diffFallback}>
+          <EditPreviewPanel
+            path={str(r, 'path') ?? ''}
+            oldString={str(r, 'oldString') ?? ''}
+            newString={str(r, 'newString') ?? ''}
+            replaceAll={r['replaceAll'] === true}
+          />
+        </Suspense>
       );
-    }
-    case 'write': {
-      const path = str(r, 'path') ?? '';
-      const content = str(r, 'content') ?? '';
+    case 'write':
       return (
-        <div className="overflow-hidden rounded-md border bg-background">
-          <div className="flex items-center gap-2 border-b px-3 py-1.5 font-mono text-xs">
-            <span className="min-w-0 flex-1 truncate">{path}</span>
-            <DiffStat diff={writeDiff(content)} />
-          </div>
-          <CodeBlock code={content} lang={langForPath(path) ?? undefined} className="my-0 max-h-64 overflow-auto rounded-none border-0" />
-        </div>
+        <Suspense fallback={diffFallback}>
+          <WritePreviewPanel path={str(r, 'path') ?? ''} content={str(r, 'content') ?? ''} />
+        </Suspense>
       );
-    }
     case 'bash':
       return <CodeBlock code={str(r, 'command') ?? ''} lang="bash" className="my-0" />;
     default: {

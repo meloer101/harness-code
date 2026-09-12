@@ -7,18 +7,22 @@ import { toolPreview, toolView } from './tools/registry';
 afterEach(cleanup);
 
 describe('Markdown', () => {
-  it('renders GFM: emphasis, lists, inline code, tables', () => {
+  it('renders GFM: emphasis, lists, inline code, tables', async () => {
     const { container } = render(
       <Markdown text={'**bold** and `code`\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |'} />,
     );
+    // Markdown lazily loads MarkdownBody (code-split out of the main bundle) behind a
+    // Suspense boundary; wait for it to resolve before asserting on parsed content.
+    await screen.findByText('bold');
     expect(container.querySelector('strong')?.textContent).toBe('bold');
     expect(container.querySelector('code')?.textContent).toBe('code');
     expect(container.querySelectorAll('li')).toHaveLength(2);
     expect(container.querySelector('table td')?.textContent).toBe('1');
   });
 
-  it('renders fenced code as a code block, closing a dangling fence mid-stream', () => {
+  it('renders fenced code as a code block, closing a dangling fence mid-stream', async () => {
     const { container } = render(<Markdown text={'look:\n```ts\nconst a = 1;'} streaming />);
+    await screen.findByText('ts'); // language label; only present once MarkdownBody resolves
     const pre = container.querySelector('pre');
     expect(pre?.textContent).toBe('const a = 1;');
     expect(screen.getByText('ts')).toBeTruthy(); // language label
@@ -33,7 +37,7 @@ describe('Markdown', () => {
 });
 
 describe('tool renderers', () => {
-  it('edit: summary is the path, body is a diff, small diffs open by default', () => {
+  it('edit: summary is the path, body is a diff, small diffs open by default', async () => {
     const view = toolView({
       id: 't',
       name: 'edit',
@@ -50,6 +54,8 @@ describe('tool renderers', () => {
       </>,
     );
     expect(container.textContent).toContain('src/a.ts');
+    // meta/body are lazy-loaded (EditDiffMeta/EditDiffPanel, code-split via diffPanels.tsx).
+    await screen.findByText('+1');
     expect(container.textContent).toContain('+1');
     expect(container.textContent).toContain('const a = 2;');
   });
@@ -88,10 +94,13 @@ describe('tool renderers', () => {
     expect(container.textContent).toContain('"q": "x"');
   });
 
-  it('previews an edit ask as a diff', () => {
+  it('previews an edit ask as a diff', async () => {
     const { container } = render(
       <>{toolPreview('edit', { path: 'docs/a.md', oldString: 'old line', newString: 'new line' })}</>,
     );
+    // The whole preview (EditPreviewPanel, including the path) is behind one Suspense
+    // boundary in toolPreview, so nothing is visible until the lazy chunk resolves.
+    await screen.findByText('docs/a.md');
     expect(container.textContent).toContain('docs/a.md');
     expect(container.textContent).toContain('old line');
     expect(container.textContent).toContain('new line');

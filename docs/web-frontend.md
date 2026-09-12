@@ -135,7 +135,7 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 - `edit` 的 diff 在比对前给新旧串补结尾换行，否则「在最后一行后追加」会被显示成整行替换。
 - 权限 dock 按工具预览（`toolPreview`）：edit 显示 diff、write 显示高亮后的文件内容、bash 显示高亮命令——审批时能看到到底要改什么。
 - 小于 40 行的 edit/write diff 默认展开，大的折叠；`exit_plan_mode` 卡片的计划用 Markdown 渲染。
-- 主包从 ~370KB 涨到 ~545KB（react-markdown + remark-gfm + diff），以后可以把 Markdown 也懒加载。
+- 主包从 ~370KB 涨到 ~545KB（react-markdown + remark-gfm + diff）；已懒加载，主入口约 ~392KB（`MarkdownBody` / `diff` 独立 chunk）。
 
 **第二批已完成**。实现备注：ask/plan 出现时 dock 会抢焦点（否则按键都进了 composer 的 textarea），快捷键和 TUI 一致：ask 是 y/a/n、Esc 等于 deny，plan 是 y/n、Esc 等于 reject；在反馈框里打字时快捷键不生效。反馈文字随 deny / reject 一起发给模型。
 
@@ -154,10 +154,7 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 - 更新 `docs/web.md`：Status 改为已实现，记录和设计稿之间的偏差（"As built" 一节：并发 ask 队列、启动 notice 的 sessionId、plan 批准后的 mode 事件、中途 snapshot 依赖 recorder、`z.void()` 不收 null、slash 的前后端分工、静态缓存头、CSP 逼出的 Shiki JS 引擎）。
 - README：加 `hc web` 的用法和「The web UI」一节，Layout 补上 protocol/server/web 三个包，Roadmap 第 9 行标注 web UI 已完成。
 
-**遗留**（不阻塞 v1，按需再做）：
-- 打开旧会话要等约 5s（要完整重建 session，含 MCP 连接）；可以先用 snapshot 渲染，后台再建。
-- 压缩分隔线还没跑到过，需要一个小上下文窗口的配置来验证。
-- web 主包约 545KB，markdown 相关依赖可以改成懒加载。
+**遗留**（不阻塞 v1，按需再做）：无（M6 三项 follow-up 已收尾；eval cassette 见 `docs/eval-findings.md`）。
 
 ---
 
@@ -187,12 +184,15 @@ packages/cli       新增 `hc web [--port] [--no-open] [--dev-origin <url>]`
 1. **每个 M 完成后**：`pnpm typecheck && pnpm test && pnpm build` 全部通过，TUI 的现有测试保持绿色。
 2. **M2 完成后**：`hc web --mock --no-open`，用一个小的 node ws 脚本连接，确认 auth、send 和事件流都正常，同时确认错误的 Origin 或 token 会被拒绝。
 3. **M5 每批完成后**：用 in-app Browser pane 打开 `hc web --mock` 的页面，截图检查一轮对话、工具卡片、权限 dock（点 once/always/deny）、plan 审批、中途 abort、刷新页面后 pending ask 仍在、开两个 tab 时先答者生效。
-4. **最后一步**：去掉 `--mock`，用真实模型在本仓库里跑一轮带 bash 和 edit 的任务，检查费用和上下文占比显示，再测一次压缩后分隔线是否正确。
+4. **最后一步**：去掉 `--mock`，用真实模型在本仓库里跑一轮带 bash 和 edit 的任务，检查费用和上下文占比显示；`/compact` 后分隔线见 `Transcript.test.tsx` + `sessionModel.test.ts`。
 
-**2026-09-11 真实模型冒烟（M5 第一批后提前跑，`deepseek/deepseek-v4-flash`）**：read → bash `git log` → edit → bash `tail` 一轮跑通，约 $0.015、上下文 3%；从磁盘恢复旧会话能正确显示。压缩分隔线还没测。发现并修掉的问题：
+**2026-09-11 真实模型冒烟（M5 第一批后提前跑，`deepseek/deepseek-v4-flash`）**：read → bash `git log` → edit → bash `tail` 一轮跑通，约 $0.015、上下文 3%；从磁盘恢复旧会话能正确显示。发现并修掉的问题：
 - **host 并发 ask 死锁**：模型并行发两个要审批的工具调用时，第二个 ask 覆盖了第一个，第一个的 promise 永远不 resolve，整轮挂住。现在 host 用队列，一次只展示一个，abort 时全部结算。
 - **core 的 macOS bash 沙箱挡了 `/dev/null`**：`git` 等以读写方式打开 `/dev/null` 的命令直接失败（TUI 同样受影响）。profile 现在放行 `/dev/null`、`/dev/zero`、`/dev/tty*`、`/dev/fd/*`。
 - **启动 notice 丢失**：它们在 `AgentSession.create` 期间发出，那时 host 还不知道 id，帧里 `sessionId` 是空串；`attach` 时回填，新建会话从 seq 0 订阅以重放它们。
 - **同一标签页粘贴新 URL 不生效**：只改 hash 不重载，旧 token 还在；现在 `#token=` 的 hashchange 会存 token 并重载。
 - **贴底滚动误判**：`content-visibility` 行高落定后内容变高被当成用户上滑；改成只有向上滚才解除贴底，并用 ResizeObserver 跟随内容增长。
-- 待办：从磁盘恢复会话要 ~5s（完整建会话含 MCP 连接）；markdown 原样显示；edit 的审批只显示路径看不到改动内容。
+- 待办：markdown 原样显示（仍未解决，见下方 2026-09-12 更新）。
+  ~~edit 的审批只显示路径看不到改动内容~~ —— **已在 `f570301`（M5 第 3 批 "markdown, lazy highlighting, per-tool cards, diff previews"）修复，本条待办此前一直忘记删除**：`toolPreview('edit', …)` 早已渲染完整 diff（新旧内容），见第 136 行与 `render.test.tsx` 的 `previews an edit ask as a diff` 测试。
+
+**2026-09-12**：核实上面这条"待办"时发现它已经过时三个 commit（`f570301` 之后一直没删）。同时发现工作区里未提交的 `diffPanels.tsx` / `registry.tsx` 改动（把已有的 diff 渲染逻辑抽成懒加载模块）**当时其实是半成品**：`Suspense`/`lazy` 拆分本身没问题，但配套的 `render.test.tsx`（已提交、未同步改动）还是同步断言，没有等懒加载的 `Suspense` 边界 resolve，导致 8 个用例里 4 个挂在 "Loading diff…" 兜底内容上失败。已补上 `await screen.findByText(...)` 让测试等待懒加载完成，8 个用例全部通过，随本次改动一并提交。markdown 原样显示的问题仍未复现/修复，保留在待办里。
