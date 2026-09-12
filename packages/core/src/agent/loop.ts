@@ -778,8 +778,11 @@ export class AgentLoop {
     );
 
     const results = new Map<string, ToolResult>();
-    const runOne = async ({ call, decision }: Decision): Promise<void> => {
-      this.emit({ type: 'tool_call_start', id: call.id, name: call.name, input: call.input });
+
+    const execute = async ({
+      call,
+      decision,
+    }: Decision): Promise<{ result: ToolResult; durationMs: number }> => {
       const startedAt = Date.now();
       const result = await this.executeOne(call, decision, opts.truncated === true);
       const durationMs = Date.now() - startedAt;
@@ -790,23 +793,76 @@ export class AgentLoop {
             ? feedback.appendToResult
             : `${result.content}\n\n${feedback.appendToResult}`;
       }
-      results.set(call.id, result);
-      this.emit({ type: 'tool_call_end', id: call.id, name: call.name, result });
+      return { result, durationMs };
+    };
+
+    const finish = async (
+      { call, decision }: Decision,
+      outcome: { result: ToolResult; durationMs: number },
+    ): Promise<void> => {
+      results.set(call.id, outcome.result);
+      this.emit({ type: 'tool_call_end', id: call.id, name: call.name, result: outcome.result });
       await this.opts.recorder?.recordToolCall({
         id: call.id,
         name: call.name,
         input: call.input,
-        result,
+        result: outcome.result,
       });
       await this.opts.trace?.toolCall({
         turn: turnCtx.turn,
         id: call.id,
         name: call.name,
         input: call.input,
-        durationMs,
-        result,
+        durationMs: outcome.durationMs,
+        result: outcome.result,
         denied: decision.decision === 'deny',
       });
+    };
+
+    const runOne = async (item: Decision): Promise<void> => {
+      this.emit({
+        type: 'tool_call_start',
+        id: item.call.id,
+        name: item.call.name,
+        input: item.call.input,
+      });
+      await finish(item, await execute(item));
+    };
+
+    // A concurrency-safe batch executes its calls in parallel, but the
+    // tool_call_end event (and the recorder/trace log it feeds) must still
+    // land in the model's original emission order: a later call that happens
+    // to finish first must not be reported "done" before an earlier, slower
+    // one. `pending` holds outcomes that completed out of order; `drain`
+    // flushes them once every earlier index in the batch has already been
+    // flushed, so ordering holds without giving up parallel execution.
+    const runBatchInOrder = async (batch: Decision[]): Promise<void> => {
+      const pending = new Map<number, { result: ToolResult; durationMs: number }>();
+      let nextFlush = 0;
+      const drain = async (): Promise<void> => {
+        while (pending.has(nextFlush)) {
+          const outcome = pending.get(nextFlush)!;
+          pending.delete(nextFlush);
+          await finish(batch[nextFlush]!, outcome);
+          nextFlush++;
+        }
+      };
+      const runAt = async (idx: number): Promise<void> => {
+        const item = batch[idx]!;
+        this.emit({
+          type: 'tool_call_start',
+          id: item.call.id,
+          name: item.call.name,
+          input: item.call.input,
+        });
+        pending.set(idx, await execute(item));
+        await drain();
+      };
+      await runWithConcurrency(
+        batch.map((_, idx) => idx),
+        this.concurrency,
+        runAt,
+      );
     };
 
     // Walk the model's order. Continuous concurrency-safe calls form a batch
@@ -826,7 +882,7 @@ export class AgentLoop {
       }
       const batchStart = i;
       while (i < decisions.length && isParallelisable(decisions[i]!)) i++;
-      await runWithConcurrency(decisions.slice(batchStart, i), this.concurrency, runOne);
+      await runBatchInOrder(decisions.slice(batchStart, i));
     }
 
     const blocks = calls.map((call) => {

@@ -11,32 +11,40 @@
 | opencode | https://github.com/anomalyco/opencode | `b3f1a96` | `packages/opencode/src/session/processor.ts`、`retry.ts`、`overflow.ts`、`compaction.ts`、`prompt.ts` |
 | hermes-agent | https://github.com/NousResearch/hermes-agent | `ac07e20` | `agent/tool_guardrails.py`、`verification_stop.py`、`turn_stop_gates.py`、`turn_truncation.py`、`error_classifier.py` |
 
-相关文档：[eval-findings.md](eval-findings.md)（C1–C3 等行为问题）、[runtime-hardening.md](runtime-hardening.md)（A6 / B1 已落地）。
+相关文档：[eval-findings.md](eval-findings.md)（C1–C3 等行为问题）、[runtime-hardening.md](runtime-hardening.md)（A6 / B1 已落地）、[harness-taxonomy.md](harness-taxonomy.md)（本文所有发现按分类汇总并排优先级）。
+
+> **2026-09-12 状态更新**：逐条重新对照当前代码后确认，#1–#4（本文档的全部 P0 项）此前均已在代码中修复，只是本文档从未回填状态。具体：#2 的独立停止原因、#3 的 mid-turn 补救压缩、#4 的 `normalizeHistory`/`abortedResult` 均已实现并有单测覆盖。唯一在本次复核中发现的**真实残留缺陷**是 #1 的一个更窄的子问题：并发批次内 `tool_call_end` 事件（及其驱动的 recorder/trace 落盘）按*完成顺序*而非*模型给出的原始顺序*触发——已在 `loop.ts` 的 `runToolCalls`（新增 `runBatchInOrder`/`drain` 排序缓冲）中修复，并补充回归测试 `emits tool_call_end in the model's emission order even when a later call finishes first`（`packages/core/src/agent/loop.test.ts`）。#2 文档建议的"文本截断后有上限续写"仍未实现，保留为待办（见各条目内联标注）。
 
 ---
 
 ## 总览
 
-| # | 发现 | 类型 | 证据 | 建议优先级 |
-|---|---|---|---|---|
-| 1 | 同一轮内工具调用被重排 | 我们的缺陷 | **已复现** | P0 |
-| 2 | 输出截断被当成正常结束 | 我们的缺陷 | 读代码确认 | P0 |
-| 3 | provider 报上下文超长时直接失败 | 我们的缺陷 | 读代码确认 | P0 |
-| 4 | 工具执行中被杀后 `--resume` 可能 400 | 我们的缺陷 | 读代码推断，未复现 | P0 |
-| 5 | 工具循环防护（签名级追踪） | 可借鉴，补 C2/C3 | — | P1 |
-| 6 | 结束前拦截（stop gate / `onBeforeStop`） | 可借鉴，补 C1 | — | P2（需新 hook 接口） |
-| 7 | 最后一轮不给工具，强制总结 | 可借鉴，补子 agent | — | P1 |
-| 8 | 重试细节：采用服务端等待时间、按文本判断可重试 | 可借鉴 | — | P2 |
-| 9 | 全量摘要前的廉价瘦身 | 可借鉴 | — | P3（与缓存有取舍） |
-| 10 | `stream-json` 采用条目为中心的事件格式 | 可借鉴，用于 A5 | — | 做 A5 时 |
+| # | 发现 | 类型 | 证据 | 建议优先级 | **2026-09-12 状态** |
+|---|---|---|---|---|---|
+| 1 | 同一轮内工具调用被重排 | 我们的缺陷 | **已复现** | P0 | ✅ 执行顺序已修复（原报告场景）；⚠️→✅ 并发批次内事件/日志顺序 2026-09-12 修复 |
+| 2 | 输出截断被当成正常结束 | 我们的缺陷 | 读代码确认 | P0 | ✅ 独立停止原因 + 工具参数截断已修复；文本续写（建议步骤 2）仍未实现 |
+| 3 | provider 报上下文超长时直接失败 | 我们的缺陷 | 读代码确认 | P0 | ✅ 已修复（mid-turn 单次补救压缩） |
+| 4 | 工具执行中被杀后 `--resume` 可能 400 | 我们的缺陷 | 读代码推断，未复现 | P0 | ✅ 已修复（`normalizeHistory`/`abortedResult`，有测试） |
+| 5 | 工具循环防护（签名级追踪） | 可借鉴，补 C2/C3 | — | P1 | 未复核 |
+| 6 | 结束前拦截（stop gate / `onBeforeStop`） | 可借鉴，补 C1 | — | P2（需新 hook 接口） | 未复核 |
+| 7 | 最后一轮不给工具，强制总结 | 可借鉴，补子 agent | — | P1 | 未复核 |
+| 8 | 重试细节：采用服务端等待时间、按文本判断可重试 | 可借鉴 | — | P2 | 未复核 |
+| 9 | 全量摘要前的廉价瘦身 | 可借鉴 | — | P3（与缓存有取舍） | 未复核 |
+| 10 | `stream-json` 采用条目为中心的事件格式 | 可借鉴，用于 A5 | — | 做 A5 时 | 未复核 |
 
-建议顺序：1 → 2 → 3 → 4（都是局部改动，1 改动最小、影响最大）→ 5、7 → 6 → 8 → 9；10 随 A5 一起做。
+建议顺序（2026-09-10 原始记录，供参考）：1 → 2 → 3 → 4（都是局部改动，1 改动最小、影响最大）→ 5、7 → 6 → 8 → 9；10 随 A5 一起做。
+**2026-09-12 更新**：1–4 已在代码里逐条核实，除 #1 的并发批次事件顺序残留问题（已修复）和 #2 的文本续写（仍是开放的小型增强）外，其余均已关闭。5–10（"可借鉴"类，非我们的缺陷）本次未复核，状态维持原样。
 
 ---
 
 ## 一、对比中发现的我们自己的缺陷
 
-### 1. 同一轮内的工具调用会被重排 — **P0，已复现**
+### 1. 同一轮内的工具调用会被重排 — **P0，已复现** — ✅ 执行顺序已修复；⚠️ 事件顺序 2026-09-12 修复
+
+> **状态（2026-09-12）**：下面描述的"`[edit, read]` 实际先执行 read"这一执行顺序 bug **已经修复**——`runToolCalls` 现按模型顺序遍历，把连续的 `concurrencySafe` 调用分批并发、遇到不可并发调用即作为分界点单独执行，`tool_result` 回填顺序也始终按原调用顺序，与本文第 52–53 行当初建议的修复方向完全一致；回归测试见 `preserves model order: a write barrier runs before a following read`（`loop.test.ts`）。
+> 复核时发现一个更窄、此前未被覆盖的残留问题：**同一并发批次内，`tool_call_end` 事件（以及它驱动的 `recorder.recordToolCall` / `trace.toolCall` 落盘）按完成顺序而非模型给出的原始顺序触发**——例如批次里第二个调用先执行完，日志/事件流会先看到它"结束"。这不影响发给模型的 `tool_result` 内容（那部分顺序一直是对的），但会让会话 JSONL 审计日志和任何按事件流顺序解读"谁先完成"的下游消费者拿到误导性顺序。已在 `loop.ts` 里新增 `runBatchInOrder`（一个按索引排队的 `pending`/`drain` 缓冲）修复：并发执行不变，但 `tool_call_end`/recorder/trace 严格按批次内原始顺序释放。新增回归测试 `emits tool_call_end in the model's emission order even when a later call finishes first`。
+
+**原始记录（2026-09-10，供参考）：**
 
 **现状**：`AgentLoop.runToolCalls`（`packages/core/src/agent/loop.ts`，`const parallel = decisions.filter(...)` 处）
 先把所有 `concurrencySafe` 的调用并发跑完，再按顺序跑其余调用，没有保持模型给出的顺序。
@@ -52,7 +60,12 @@
 **修复方向**：按原顺序遍历调用，把**连续的**可并发调用分成一批并发执行，遇到不可并发的调用就作为分界点单独执行。
 结果仍按原调用顺序回填（现有逻辑已如此）。补一个"`[edit, read]` 必须先 edit"的回归测试。
 
-### 2. 输出被截断时，运行被当成正常结束 — **P0**
+### 2. 输出被截断时，运行被当成正常结束 — **P0** — ✅ 独立停止原因已实现；文本续写仍未实现
+
+> **状态（2026-09-12）**：本条"修复方向"第 1 步（至少给出独立停止原因，不伪装成 `end_turn`）**已实现**——`loop.ts` 的 `agentStopFrom` 把 `max_tokens`/`content_filter` 映射成独立于 `end_turn` 的 `AgentStopReason`，Web 前端 `STOP_NOTICES` 据此展示专门提示，调用方不会误以为正常完成。第 3 步（工具参数截断回错误 `tool_result`）也已实现，见 `executeOne` 里 `TRUNCATED_TOOL_HINT` 分支。回归测试见 `loop.test.ts` 的 `stops with max_tokens when the model truncates a text-only turn` 与 `returns an error tool_result and continues when truncation hits mid tool args`。
+> **第 2 步（文本截断后有上限地续写）仍未实现** —— 当前对纯文本截断（无待执行工具调用）的处理是直接以 `max_tokens` 停止本轮，而不是像 hermes 那样自动续写。这是本条目里唯一还站得住的开放项，效果上是"停止而非悄悄当成完成"，不算严重，但仍值得作为一个独立的小型增强来做。
+
+**原始记录（2026-09-10，供参考）：**
 
 **现状**：`loop.ts` 中 `if (response.stopReason !== 'tool_use')` 一律按 `end_turn` 结束。
 provider 已把 `finish_reason: length` 归一为 `max_tokens`、把内容过滤归一为 `content_filter`，但 loop 不区分：
@@ -68,7 +81,11 @@ provider 已把 `finish_reason: length` 归一为 `max_tokens`、把内容过滤
 2. 文本截断：有上限地续写（临时提示，沿用现有 ephemeral note 机制，不写入历史）。
 3. 工具参数截断：回一个错误 `tool_result`，提示模型拆小写入（或在模型上限允许时调高 `maxOutputTokens` 重试）。
 
-### 3. provider 报上下文超长时直接失败 — **P0**
+### 3. provider 报上下文超长时直接失败 — **P0** — ✅ 已修复
+
+> **状态（2026-09-12）**：已实现本条建议的修复方向——`loop.ts` 里有明确注释"At most one mid-turn salvage: provider says context_length → compact once and re-send"，在 `streamTurnWithRetry` 抛出 `ProviderError('context_length')` 时，若配置了 `onCompact` 且本轮尚未补救过，会强制压缩后重发一次，仍失败则按原路径抛出——与 Codex/opencode 的参考做法一致。未发现残留问题；本条视为已关闭。
+
+**原始记录（2026-09-10，供参考）：**
 
 **现状**：`openai-compat.ts` 能把超长错误识别为 `ProviderError('context_length')`，但 loop 只会把它抛出去。
 我们的主动压缩依赖 token 估算（以上一轮真实 usage 为锚），对非 DeepSeek 分词器、或一次追加了超大工具结果的轮次，估算可能偏低，缺少兜底。
@@ -80,7 +97,11 @@ provider 已把 `finish_reason: length` 归一为 `max_tokens`、把内容过滤
 **修复方向**：在 `streamTurnWithRetry` 的调用处捕获 `kind === 'context_length'`，若配置了 `onCompact` 且本轮尚未补救过，则强制压缩后重发一次；
 仍失败则按现有路径抛出。压缩被关闭（`--no-compact`）时保持现状。
 
-### 4. 工具执行中进程被杀，`--resume` 很可能直接 400 — **P0，读代码推断，未复现**
+### 4. 工具执行中进程被杀，`--resume` 很可能直接 400 — **P0，读代码推断，未复现** — ✅ 已修复
+
+> **状态（2026-09-12）**：已实现本条建议的修复方向——`packages/core/src/agent/session.ts` 的 `loadSession` 在返回前总会跑 `normalizeHistory`，为缺少 `tool_result` 的 `tool_use` 补一条 `{content: 'aborted', isError: true}`（`abortedResult` 辅助函数），孤立结果也会被处理。`session.test.ts` 有专门的 `normalizeHistory` 单测（`inserts aborted results for a trailing assistant tool_use` 等）以及一个更贴近场景的集成测试（`fills aborted tool_results when resume history has tool_use without results`）。未发现残留问题；本条视为已关闭，且原先"读代码推断，未复现"的不确定性已通过找到对应实现和测试解除。
+
+**原始记录（2026-09-10，供参考）：**
 
 **现状**：
 - `AgentLoop` 在工具运行**之前**就把带 `tool_use` 的 assistant 消息写入 recorder；`tool_result` 要等本轮工具全部执行完才写入。

@@ -38,6 +38,7 @@ function trackingTool(opts: {
   concurrencySafe: boolean;
   onRun?: () => void;
   activeCounter?: { active: number; max: number };
+  delayMs?: number;
 }): ToolSpec<unknown> {
   return {
     name: opts.name,
@@ -51,7 +52,7 @@ function trackingTool(opts: {
         opts.activeCounter.active++;
         opts.activeCounter.max = Math.max(opts.activeCounter.max, opts.activeCounter.active);
       }
-      await delay(30);
+      await delay(opts.delayMs ?? 30);
       if (opts.activeCounter) opts.activeCounter.active--;
       return { content: `${opts.name} ran` };
     },
@@ -123,6 +124,40 @@ describe('AgentLoop', () => {
     await loop.run([userText('hi')]);
 
     expect(counter.max).toBe(2);
+  });
+
+  it('emits tool_call_end in the model\'s emission order even when a later call finishes first', async () => {
+    const provider = new ScriptedProvider([
+      {
+        toolCalls: [
+          { name: 'slow', input: {} },
+          { name: 'fast', input: {} },
+        ],
+      },
+      { text: 'done' },
+    ]);
+    const tools = new ToolRegistry([
+      trackingTool({ name: 'slow', readOnly: true, concurrencySafe: true, delayMs: 40 }),
+      trackingTool({ name: 'fast', readOnly: true, concurrencySafe: true, delayMs: 5 }),
+    ]);
+    const events: AgentEvent[] = [];
+    const loop = new AgentLoop({
+      model: resolvedModel(provider),
+      tools,
+      cwd: '/tmp',
+      onEvent: (e) => events.push(e),
+    });
+
+    await loop.run([userText('hi')]);
+
+    const isStart = (e: AgentEvent): e is Extract<AgentEvent, { type: 'tool_call_start' }> =>
+      e.type === 'tool_call_start';
+    const isEnd = (e: AgentEvent): e is Extract<AgentEvent, { type: 'tool_call_end' }> =>
+      e.type === 'tool_call_end';
+    const startOrder = events.filter(isStart).map((e) => e.name);
+    const endOrder = events.filter(isEnd).map((e) => e.name);
+    expect(startOrder).toEqual(['slow', 'fast']);
+    expect(endOrder).toEqual(['slow', 'fast']);
   });
 
   it('preserves model order: a write barrier runs before a following read', async () => {
