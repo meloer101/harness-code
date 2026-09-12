@@ -271,7 +271,9 @@ program
           ...(opts.resume ? { resumeId: opts.resume } : {}),
         });
       } catch (err) {
-        if (err instanceof NoModelConfiguredError) fail(err.message);
+        if (err instanceof NoModelConfiguredError) {
+          failWithFormat(err.message, opts.outputFormat, opts.model ?? 'unknown', opts.progress);
+        }
         throw err;
       }
 
@@ -590,6 +592,25 @@ function errorMessageOf(err: unknown): string {
 function fail(message: string): never {
   process.stderr.write(`hc: ${message}\n`);
   process.exit(2);
+}
+
+/**
+ * Like `fail`, but for errors raised before an `agent`-command output sink
+ * exists (e.g. a bad `--model` or missing config, before `buildSessionConfig`
+ * resolves). `--output-format json`/`stream-json` callers parse stdout as
+ * structured JSON, so this must not fall back to `fail`'s plain stderr line —
+ * it builds a throwaway sink just to emit the same `{type: "error"}` /
+ * `{type: "result", is_error: true}` shape a mid-run failure would produce.
+ */
+function failWithFormat(
+  message: string,
+  format: 'text' | 'json' | 'stream-json',
+  modelRef: string,
+  progress: boolean,
+): never {
+  if (format === 'text') fail(message);
+  createSink(format, modelRef, { progress }).fail({ sessionId: '', turns: 0, error: { message } });
+  process.exit(1);
 }
 
 async function main(): Promise<void> {
