@@ -28,13 +28,17 @@ whether any of it works. Runs on any OpenAI-compatible model. Ships as the
 
 ## Quick start
 
-Install the CLI (Node ≥ 20.10):
+Install the CLI (Node ≥ 20.10). It ships as one self-contained package — no
+npm account or registry needed:
 
 ```bash
-npm install -g marvis
-# or run without installing:
-npx marvis@latest
+npm install -g https://github.com/meloer101/harness-code/releases/download/v0.1.0/marvis-0.1.0.tgz
 ```
+
+This gives you the `marvis` (and `hc`) command. To upgrade later, re-run the
+same line with the newest release URL from
+[Releases](https://github.com/meloer101/harness-code/releases). _(A shorter
+`npm install -g marvis` is planned once the npm listing is live.)_
 
 Give it a key for whichever provider you use. Marvis reads a `.env` in the
 directory you run it from, and real shell environment variables always win:
@@ -56,9 +60,9 @@ marvis models                # show configured providers and which have keys
 ```
 
 By default Marvis runs in **`ask` mode**: it reads freely but pauses for your
-approval before running a shell command or writing to a file. Update anytime
-with `npm update -g marvis` (or `npx marvis@latest`) — a single package, a
-single version line.
+approval before running a shell command or writing to a file. It's a single
+self-contained package on one version line — to upgrade, re-install from the
+newest [release](https://github.com/meloer101/harness-code/releases) URL.
 
 ## Safety
 
