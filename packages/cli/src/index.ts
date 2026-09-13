@@ -205,7 +205,7 @@ program
 program
   .command('agent', { isDefault: true })
   .description(
-    'Run the agent loop with tools (read/write/edit/glob/grep/bash/todo). ' +
+    'Run the agent loop with tools (read/write/edit/glob/grep/bash/todo/webfetch). ' +
       'Omit <prompt> to start an interactive session — this is also what bare `marvis` runs.',
   )
   .argument('[prompt]', 'the task to hand to the agent; omit to start an interactive session')

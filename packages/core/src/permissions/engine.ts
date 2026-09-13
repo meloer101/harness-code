@@ -1,6 +1,6 @@
 import { inspectBash } from './bash-ast.js';
 import { KNOWN_TOOLS, PLANS_DIR_PREFIX, READ_ONLY_TOOLS } from './defaults.js';
-import { ruleMatchesBash, ruleMatchesMcp, ruleMatchesPath } from './match.js';
+import { ruleMatchesBash, ruleMatchesMcp, ruleMatchesPath, ruleMatchesWebFetch } from './match.js';
 import { parseRule } from './parse.js';
 import { PathEscapeError, isSensitivePath, relativeToWorkspace, resolveInWorkspace } from './paths.js';
 import type {
@@ -88,6 +88,10 @@ export class PermissionEngine {
       return this.evaluateWholeTool('task', false);
     }
 
+    if (tool === 'webfetch') {
+      return this.evaluateWebFetch(req.input);
+    }
+
     if (tool === 'exit_plan_mode') {
       return this.evaluateExitPlanMode();
     }
@@ -103,6 +107,26 @@ export class PermissionEngine {
     const denied = this.deny.find((r) => r.tool === 'exit_plan_mode');
     if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
     return { decision: 'allow' };
+  }
+
+  /**
+   * `webfetch` makes no workspace change, so it counts as read-only for the
+   * mode default (allowed in `plan`/`readOnly`/`yolo`, asked in `ask`) — the
+   * same stance Claude Code takes. Network egress is instead scoped by rules:
+   * a bare `WebFetch` rule, or a per-host `WebFetch(domain:example.com)`.
+   */
+  private evaluateWebFetch(input: unknown): PermissionVerdict {
+    const rec = asRecord(input);
+    const url = typeof rec.url === 'string' ? rec.url : '';
+
+    const denied = this.deny.find((r) => ruleMatchesWebFetch(r, url));
+    if (denied) return { decision: 'deny', reason: `Blocked by deny rule ${denied.raw}` };
+    const allowed = this.allow.find((r) => ruleMatchesWebFetch(r, url));
+    if (allowed) return { decision: 'allow' };
+    const asked = this.askRules.find((r) => ruleMatchesWebFetch(r, url));
+    if (asked) return { decision: 'ask', reason: `Requires approval (${asked.raw})` };
+
+    return this.modeDefault('webfetch', true);
   }
 
   private evaluateMcp(tool: string): PermissionVerdict {

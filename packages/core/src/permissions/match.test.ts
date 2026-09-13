@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { matchBashPattern, matchPathGlob } from './match.js';
 import { parseRule } from './parse.js';
-import { ruleMatchesPath } from './match.js';
+import { ruleMatchesPath, ruleMatchesWebFetch } from './match.js';
 
 describe('matchPathGlob', () => {
   it('matches a file under ./src/**', () => {
@@ -35,5 +35,25 @@ describe('ruleMatchesPath', () => {
     const rule = parseRule('Read');
     expect(ruleMatchesPath(rule, 'read', 'src/a.ts')).toBe(true);
     expect(ruleMatchesPath(rule, 'read', '../secret')).toBe(false);
+  });
+});
+
+describe('ruleMatchesWebFetch', () => {
+  it('bare WebFetch matches any URL', () => {
+    const rule = parseRule('WebFetch');
+    expect(ruleMatchesWebFetch(rule, 'https://anything.example/x')).toBe(true);
+  });
+
+  it('WebFetch(domain:example.com) matches the host and its subdomains only', () => {
+    const rule = parseRule('WebFetch(domain:example.com)');
+    expect(ruleMatchesWebFetch(rule, 'https://example.com/a')).toBe(true);
+    expect(ruleMatchesWebFetch(rule, 'https://docs.example.com/a')).toBe(true);
+    expect(ruleMatchesWebFetch(rule, 'https://evil.com/a')).toBe(false);
+    expect(ruleMatchesWebFetch(rule, 'https://notexample.com/a')).toBe(false);
+  });
+
+  it('does not match a rule for another tool, or an unparseable URL', () => {
+    expect(ruleMatchesWebFetch(parseRule('Read'), 'https://example.com')).toBe(false);
+    expect(ruleMatchesWebFetch(parseRule('WebFetch(domain:example.com)'), 'not a url')).toBe(false);
   });
 });

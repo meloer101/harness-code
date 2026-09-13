@@ -29,7 +29,7 @@ describe('createHarnessMcpServer', () => {
   it('lists the builtin tools', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['bash', 'edit', 'glob', 'grep', 'read', 'todo', 'write'].sort(),
+      ['bash', 'edit', 'glob', 'grep', 'read', 'todo', 'webfetch', 'write'].sort(),
     );
   });
 

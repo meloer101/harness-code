@@ -8,6 +8,7 @@ export * from './glob.js';
 export * from './grep.js';
 export * from './bash.js';
 export * from './todo.js';
+export * from './webfetch.js';
 export * from './exit-plan-mode.js';
 
 import { bashTool } from './bash.js';
@@ -17,8 +18,18 @@ import { grepTool } from './grep.js';
 import { readTool } from './read.js';
 import { todoTool } from './todo.js';
 import type { AnyToolSpec } from './types.js';
+import { webfetchTool } from './webfetch.js';
 import { writeTool } from './write.js';
 
 export function builtinTools(): AnyToolSpec[] {
-  return [readTool, writeTool, editTool, globTool, grepTool, bashTool, todoTool] as AnyToolSpec[];
+  return [
+    readTool,
+    writeTool,
+    editTool,
+    globTool,
+    grepTool,
+    bashTool,
+    todoTool,
+    webfetchTool,
+  ] as AnyToolSpec[];
 }

@@ -322,6 +322,32 @@ describe('PermissionEngine', () => {
       expect((await engine({ mode: 'yolo', deny: ['Task'] }).evaluate(call)).decision).toBe('deny');
     });
   });
+
+  describe('webfetch tool', () => {
+    const call = (e: PermissionEngine, url: string) =>
+      e.evaluate({ toolName: 'webfetch', input: { url }, readOnly: true });
+
+    it('asks by default in ask mode', async () => {
+      expect((await call(engine({ mode: 'ask' }), 'https://example.com')).decision).toBe('ask');
+    });
+
+    it('is allowed in plan and readOnly mode (no workspace effect)', async () => {
+      expect((await call(engine({ mode: 'plan' }), 'https://example.com')).decision).toBe('allow');
+      expect((await call(engine({ mode: 'readOnly' }), 'https://example.com')).decision).toBe('allow');
+    });
+
+    it('allows a host covered by WebFetch(domain:...) but still asks for others', async () => {
+      const e = engine({ mode: 'ask', allow: ['WebFetch(domain:example.com)'] });
+      expect((await call(e, 'https://docs.example.com/x')).decision).toBe('allow');
+      expect((await call(e, 'https://other.com/x')).decision).toBe('ask');
+    });
+
+    it('lets a deny rule beat the mode default', async () => {
+      const e = engine({ mode: 'plan', deny: ['WebFetch(domain:secret.com)'] });
+      expect((await call(e, 'https://secret.com/x')).decision).toBe('deny');
+      expect((await call(e, 'https://ok.com/x')).decision).toBe('allow');
+    });
+  });
 });
 
 describe('mergeSettings permissions', () => {

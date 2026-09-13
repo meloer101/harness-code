@@ -80,6 +80,28 @@ export function ruleMatchesMcp(rule: PermissionRule, toolName: string): boolean 
   return r === t || t.startsWith(`${r}__`);
 }
 
+/**
+ * Match a `webfetch` call against a rule. A bare `WebFetch` matches any URL;
+ * `WebFetch(domain:example.com)` matches that host or any subdomain of it
+ * (so `docs.example.com` matches `domain:example.com`). An unparseable URL or a
+ * non-`domain:` specifier never matches a specified rule.
+ */
+export function ruleMatchesWebFetch(rule: PermissionRule, url: string): boolean {
+  if (!ruleMatchesTool(rule, 'webfetch')) return false;
+  if (rule.pattern === undefined) return true;
+  const m = rule.pattern.match(/^domain:(.+)$/i);
+  if (!m) return false;
+  const domain = (m[1] ?? '').trim().toLowerCase().replace(/^\*\./, '');
+  if (!domain) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
 export function ruleMatchesBash(rule: PermissionRule, argv: string[]): boolean {
   if (!ruleMatchesTool(rule, 'bash')) return false;
   if (rule.pattern === undefined) return true;

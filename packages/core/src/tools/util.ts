@@ -6,6 +6,7 @@ export function errorMessage(err: unknown): string {
 export function describeToolInput(toolName: string, input: unknown): string {
   const rec = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
   if (toolName.toLowerCase() === 'bash' && typeof rec.command === 'string') return rec.command;
+  if (toolName.toLowerCase() === 'webfetch' && typeof rec.url === 'string') return rec.url;
   if (typeof rec.path === 'string') return rec.path;
   return JSON.stringify(input);
 }

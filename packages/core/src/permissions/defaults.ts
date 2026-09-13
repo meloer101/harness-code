@@ -10,6 +10,7 @@ export const KNOWN_TOOLS = new Set([
   'skill',
   'task',
   'memory',
+  'webfetch',
   'exit_plan_mode',
 ]);
 
