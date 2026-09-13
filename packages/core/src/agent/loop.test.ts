@@ -83,6 +83,28 @@ describe('AgentLoop', () => {
     });
   });
 
+  it('sends reasoning_effort only for reasoning-capable models', async () => {
+    const tools = new ToolRegistry([]);
+
+    const reasoning = new ScriptedProvider([{ text: 'ok' }]);
+    await new AgentLoop({
+      model: resolvedModel(reasoning, { reasoning: true }),
+      tools,
+      cwd: '/tmp',
+      reasoningEffort: 'high',
+    }).run([userText('hi')]);
+    expect(reasoning.requests[0]?.extraBody).toEqual({ reasoning_effort: 'high' });
+
+    const plain = new ScriptedProvider([{ text: 'ok' }]);
+    await new AgentLoop({
+      model: resolvedModel(plain, { reasoning: false }),
+      tools,
+      cwd: '/tmp',
+      reasoningEffort: 'high',
+    }).run([userText('hi')]);
+    expect(plain.requests[0]?.extraBody).toBeUndefined();
+  });
+
   it('runs concurrency-safe read-only tools in parallel', async () => {
     const provider = new ScriptedProvider([
       {

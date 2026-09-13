@@ -79,6 +79,7 @@ import { addUsage } from '../provider/types.js';
 import type { Message, Usage } from '../provider/types.js';
 import { ProviderRegistry } from '../provider/router.js';
 import type { ResolvedModel } from '../provider/router.js';
+import type { ReasoningEffort } from '../provider/types.js';
 import type { ContextBreakdown } from '../context/budget.js';
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ export type NoticeKind =
   | 'mcp-status'
   | 'permission-mode'
   | 'mode-changed'
+  | 'effort-changed'
   | 'skill-loaded'
   | 'memory'
   | 'sandbox-warn'
@@ -141,6 +143,8 @@ export interface AgentSessionConfig {
   budgets: ResolvedBudgets;
 
   mode?: PermissionMode;
+  /** Reasoning-effort level for reasoning-capable models. Defaults to `medium`. */
+  reasoningEffort?: ReasoningEffort;
   /** Mode to switch to after a plan is approved. Defaults to `settings` then `acceptEdits`. */
   planApprovedMode?: PermissionMode;
   allow?: string[];
@@ -235,6 +239,7 @@ export class AgentSession {
 
   #session: SessionState;
   #messages: Message[];
+  #effort: ReasoningEffort | undefined;
   #taskTool: AnyToolSpec | undefined;
   #activeSkills: ActiveSkill[] = [];
   #sessionUsage: Usage | undefined;
@@ -249,6 +254,10 @@ export class AgentSession {
     this.#cwd = config.cwd;
     this.#platform = config.platform ?? process.platform;
     this.#model = config.model;
+    // Default reasoning-capable models to `medium` so there's always a level to
+    // show and send; non-reasoning models carry none.
+    this.#effort =
+      config.reasoningEffort ?? (config.model.capabilities.reasoning ? 'medium' : undefined);
     this.#registry = init.registry;
     this.#engine = init.engine;
     this.#planApprovedMode = init.planApprovedMode;
@@ -555,6 +564,11 @@ export class AgentSession {
     return this.#engine.getMode();
   }
 
+  /** Current reasoning-effort level, or `undefined` when the model has no reasoning channel. */
+  get effort(): ReasoningEffort | undefined {
+    return this.#model.capabilities.reasoning ? this.#effort : undefined;
+  }
+
   get activeSkills(): readonly ActiveSkill[] {
     return this.#activeSkills;
   }
@@ -587,6 +601,11 @@ export class AgentSession {
     }));
   }
 
+  /** Installed skills (name + description), for a `/skills` list or picker. */
+  listSkills(): { name: string; description: string }[] {
+    return this.#skillCatalog.list().map((s) => ({ name: s.name, description: s.description }));
+  }
+
   // -- control --------------------------------------------------------------
 
   /** Abort an in-flight turn. Never touches process signals. */
@@ -602,6 +621,19 @@ export class AgentSession {
       kind: 'mode-changed',
       level: 'info',
       text: `mode: ${prev} → ${mode}`,
+    });
+  }
+
+  /** Set the reasoning-effort level for subsequent turns (no-op on non-reasoning models). */
+  setEffort(effort: ReasoningEffort): void {
+    if (!this.#model.capabilities.reasoning) return;
+    const prev = this.#effort;
+    if (prev === effort) return;
+    this.#effort = effort;
+    this.#config.onNotice?.({
+      kind: 'effort-changed',
+      level: 'info',
+      text: `effort: ${prev ?? 'none'} → ${effort}`,
     });
   }
 
@@ -776,6 +808,7 @@ export class AgentSession {
       control: this.#control,
       signal,
       ...this.#budgetOverrides,
+      ...(this.effort ? { reasoningEffort: this.effort } : {}),
       onEvent: this.#onEvent,
       ...this.#config.loopOverrides,
     });

@@ -27,6 +27,13 @@ describe('foldReducer', () => {
     expect(s.usage?.inputTokens).toBe(10);
   });
 
+  it('initialFoldState carries effort, and SET_EFFORT updates it', () => {
+    const s0 = initialFoldState({ mode: 'ask', modelRef: 'm/1', effort: 'medium' });
+    expect(s0.effort).toBe('medium');
+    const s1 = foldReducer(s0, { type: 'SET_EFFORT', effort: 'high' });
+    expect(s1.effort).toBe('high');
+  });
+
   it('TURN_END with an empty live region adds no entry', () => {
     const s = foldReducer(base(), { type: 'TURN_END', live: emptyLive() });
     expect(s.entries).toHaveLength(0);

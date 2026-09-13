@@ -10,7 +10,14 @@
  * logic; the web frontend will do the same.
  */
 
-import type { ContextSnapshot, Notice, PermissionMode, ToolResult, Usage } from '@harness-code/core';
+import type {
+  ContextSnapshot,
+  Notice,
+  PermissionMode,
+  ReasoningEffort,
+  ToolResult,
+  Usage,
+} from '@harness-code/core';
 
 export interface ToolItem {
   id: string;
@@ -48,6 +55,8 @@ export interface FoldState {
   usage?: Usage;
   context?: ContextSnapshot;
   mode: PermissionMode;
+  /** Reasoning-effort level; absent when the model has no reasoning channel. */
+  effort?: ReasoningEffort;
   modelRef: string;
   pendingAsk: PendingAsk | null;
   pendingPlan: PendingPlan | null;
@@ -64,17 +73,36 @@ export type FoldAction =
   | { type: 'NOTICE'; notice: Notice }
   | { type: 'USER'; text: string }
   | { type: 'SET_MODE'; mode: PermissionMode }
+  | { type: 'SET_EFFORT'; effort: ReasoningEffort }
   | { type: 'PENDING_ASK'; ask: PendingAsk }
   | { type: 'RESOLVE_ASK' }
   | { type: 'PENDING_PLAN'; plan: PendingPlan }
   | { type: 'RESOLVE_PLAN' }
-  | { type: 'NEW_SESSION' };
+  | { type: 'NEW_SESSION' }
+  | {
+      /**
+       * Replace the whole transcript at once — used when a frontend switches to
+       * a different (e.g. resumed) session and rebuilds `entries` from its
+       * persisted history via `entriesFromTranscript`. Clears the live region
+       * and any pending ask/plan; sets usage/context/mode when supplied.
+       */
+      type: 'HYDRATE';
+      entries: Entry[];
+      usage?: Usage;
+      context?: ContextSnapshot;
+      mode?: PermissionMode;
+      effort?: ReasoningEffort;
+    };
 
 export function emptyLive(): LiveSnapshot {
   return { thinking: '', text: '', tools: [] };
 }
 
-export function initialFoldState(opts: { mode: PermissionMode; modelRef: string }): FoldState {
+export function initialFoldState(opts: {
+  mode: PermissionMode;
+  modelRef: string;
+  effort?: ReasoningEffort;
+}): FoldState {
   return {
     entries: [],
     live: emptyLive(),
@@ -82,6 +110,7 @@ export function initialFoldState(opts: { mode: PermissionMode; modelRef: string 
     modelRef: opts.modelRef,
     pendingAsk: null,
     pendingPlan: null,
+    ...(opts.effort ? { effort: opts.effort } : {}),
   };
 }
 
@@ -115,6 +144,8 @@ export function foldReducer(state: FoldState, action: FoldAction): FoldState {
       };
     case 'SET_MODE':
       return { ...state, mode: action.mode };
+    case 'SET_EFFORT':
+      return { ...state, effort: action.effort };
     case 'PENDING_ASK':
       return { ...state, pendingAsk: action.ask };
     case 'RESOLVE_ASK':
@@ -125,6 +156,18 @@ export function foldReducer(state: FoldState, action: FoldAction): FoldState {
       return { ...state, pendingPlan: null };
     case 'NEW_SESSION':
       return initialFoldState({ mode: state.mode, modelRef: state.modelRef });
+    case 'HYDRATE':
+      return {
+        ...state,
+        entries: action.entries,
+        live: emptyLive(),
+        pendingAsk: null,
+        pendingPlan: null,
+        ...(action.usage ? { usage: action.usage } : {}),
+        ...(action.context ? { context: action.context } : {}),
+        ...(action.mode ? { mode: action.mode } : {}),
+        ...(action.effort ? { effort: action.effort } : {}),
+      };
   }
 }
 

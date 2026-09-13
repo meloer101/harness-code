@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { DEFAULT_ALLOW_RULES } from '../permissions/defaults.js';
 import type { PermissionConfig } from '../permissions/types.js';
 import type { RouterSettings } from '../provider/router.js';
+import type { ReasoningEffort } from '../provider/types.js';
 
 export interface Settings extends RouterSettings {
   /** `provider/model` used when none is given on the command line. */
@@ -30,6 +31,8 @@ export interface Settings extends RouterSettings {
   /** Per-request output cap; also the space reserved out of the context window. */
   maxOutputTokens?: number;
   temperature?: number;
+  /** Reasoning-effort level for reasoning-capable models. Overridable per run with `--effort`. */
+  reasoningEffort?: ReasoningEffort;
   /** Usable-window fraction at which history is auto-compacted. Loop default 0.92. */
   contextCompactRatio?: number;
   /** Trailing turns kept verbatim through a compaction. Compactor default 3. */

@@ -106,6 +106,9 @@ export type ToolChoice =
 // Request / response
 // ---------------------------------------------------------------------------
 
+/** Reasoning-effort level for models with a reasoning channel (OpenAI `reasoning_effort`). */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+
 export interface ModelRequest {
   /** Bare model id as the endpoint expects it (routing already stripped). */
   model: string;

@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "type": "module",
   "bin": {
+    "marvis": "./dist/index.js",
     "hc": "./dist/index.js"
   },
   "main": "./dist/index.js",

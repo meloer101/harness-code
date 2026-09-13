@@ -10,16 +10,13 @@
  * never recreated, so memoised rows keep their object identity.
  */
 
-import type { AgentStopReason, ContextSnapshot, Notice, ToolResult, TranscriptItem } from '@harness-code/core';
-import { EventBuffer, foldReducer, initialFoldState } from '@harness-code/protocol';
-import type {
-  Entry,
-  FoldAction,
-  FoldState,
-  SessionSnapshot,
-  ToolItem,
-  WireEvent,
-} from '@harness-code/protocol';
+import type { AgentStopReason, ContextSnapshot, ToolResult } from '@harness-code/core';
+import { EventBuffer, entriesFromTranscript, foldReducer, initialFoldState } from '@harness-code/protocol';
+import type { FoldAction, FoldState, SessionSnapshot, WireEvent } from '@harness-code/protocol';
+
+// `entriesFromTranscript` now lives in `@harness-code/protocol` (shared with the
+// TUI); re-exported here so existing importers of this module keep working.
+export { entriesFromTranscript };
 
 export interface SessionViewState extends FoldState {
   id: string;
@@ -232,55 +229,4 @@ export function stateFromSnapshot(
     askId: s.pendingAsk?.askId ?? null,
     planId: s.pendingPlan?.planId ?? null,
   };
-}
-
-/**
- * Rebuild display entries from the persisted transcript: one `assistant` entry
- * per assistant message, tool results (which ride in the next `user` message)
- * attached back onto their tool cards, compactions as a divider notice.
- */
-export function entriesFromTranscript(items: TranscriptItem[]): Entry[] {
-  const entries: Entry[] = [];
-  const tools = new Map<string, ToolItem>();
-
-  for (const item of items) {
-    if (item.type === 'compaction') {
-      const notice: Notice = {
-        kind: 'compaction',
-        level: 'info',
-        text: `Context compacted (${item.tokensBefore.toLocaleString()} → ${item.tokensAfter.toLocaleString()} tokens)`,
-      };
-      entries.push({ kind: 'notice', id: entries.length, notice });
-      continue;
-    }
-    const { message } = item;
-    if (message.role === 'assistant') {
-      let thinking = '';
-      let text = '';
-      const entryTools: ToolItem[] = [];
-      for (const block of message.content) {
-        if (block.type === 'thinking') thinking += block.text;
-        else if (block.type === 'text') text += block.text;
-        else if (block.type === 'tool_use') {
-          const tool: ToolItem = { id: block.id, name: block.name, input: block.input, running: false };
-          entryTools.push(tool);
-          tools.set(block.id, tool);
-        }
-      }
-      if (thinking || text || entryTools.length) {
-        entries.push({ kind: 'assistant', id: entries.length, thinking, text, tools: entryTools });
-      }
-      continue;
-    }
-    let userText = '';
-    for (const block of message.content) {
-      if (block.type === 'text') userText += block.text;
-      else if (block.type === 'tool_result') {
-        const tool = tools.get(block.toolUseId);
-        if (tool) tool.result = { content: block.content, ...(block.isError ? { isError: true } : {}) };
-      }
-    }
-    if (userText) entries.push({ kind: 'user', id: entries.length, text: userText });
-  }
-  return entries;
 }

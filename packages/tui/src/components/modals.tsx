@@ -12,6 +12,7 @@ import { describeToolInput } from '@harness-code/core';
 import { Markdown } from '../markdown/render.js';
 import type { PendingAsk, PendingPlan } from '../state/reducer.js';
 import type { Theme } from '../theme.js';
+import { truncate } from '../util/width.js';
 
 export function PermissionModal({
   ask,
@@ -49,13 +50,33 @@ export function Overlay({
   kind,
   theme,
   sessions,
+  skills,
   onPick,
 }: {
-  kind: 'help' | 'resume';
+  kind: 'help' | 'resume' | 'skills';
   theme: Theme;
   sessions?: { id: string; mtimeMs: number }[];
+  skills?: { name: string; description: string }[];
   onPick?: (id: string) => void;
 }) {
+  if (kind === 'skills') {
+    const list = skills ?? [];
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
+        <Text bold>skills</Text>
+        {list.slice(0, 9).map((s, i) => (
+          <Text key={s.name}>
+            <Text color={theme.accent}>{i + 1}.</Text> {s.name}
+            <Text color={theme.dim}>  {truncate(s.description, 60, 'end')}</Text>
+          </Text>
+        ))}
+        {list.length === 0 && <Text color={theme.dim}>(no skills installed)</Text>}
+        {list.length > 0 && (
+          <Text color={theme.dim}>press a number to load · Esc to close</Text>
+        )}
+      </Box>
+    );
+  }
   if (kind === 'help') {
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
@@ -63,7 +84,7 @@ export function Overlay({
         <Text color={theme.dim}>Esc — abort turn / close · Ctrl+C ×2 — quit · Ctrl+D — quit (empty) · Ctrl+O — expand output</Text>
         <Text bold>commands</Text>
         <Text color={theme.dim}>
-          /help /clear /quit /compact /cost /resume /plan · Tab — complete · MCP prompts via /name
+          /help /clear /quit /compact /cost /resume /mode /plan /effort /skills · Tab — complete · MCP prompts via /name
         </Text>
       </Box>
     );

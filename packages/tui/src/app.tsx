@@ -9,14 +9,16 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Static, Text, useInput } from 'ink';
+import { Static, Text, useInput, useStdout } from 'ink';
 
-import type { AgentSession } from '@harness-code/core';
-import { AGENT_DIR, findProjectRoot, listSessionIds } from '@harness-code/core';
+import type { AgentSession, PermissionMode, ReasoningEffort } from '@harness-code/core';
+import { AGENT_DIR, findProjectRoot, listSessionIds, loadTranscript } from '@harness-code/core';
 import type { EventBuffer } from '@harness-code/protocol';
+import { entriesFromTranscript } from '@harness-code/protocol';
 
-import { HistoryEntry, MeterBar, ModeBar, Rule, ToolCard } from './components/display.js';
-import { Input } from './components/Input.js';
+import { HistoryEntry, MeterBar, ModeBar, ToolCard } from './components/display.js';
+import { ErrorBoundary } from './components/ErrorBoundary.js';
+import { Input, type CommandInfo } from './components/Input.js';
 import { Overlay, PermissionModal, PlanModal } from './components/modals.js';
 import { Markdown } from './markdown/render.js';
 import type { UiStore } from './state/bridges.js';
@@ -25,10 +27,30 @@ import type { TuiAction } from './state/reducer.js';
 import { useTheme } from './hooks/useTheme.js';
 
 const FLUSH_MS = 33;
-const BUILTIN_COMMANDS = ['/help', '/clear', '/quit', '/compact', '/cost', '/resume', '/plan'];
+const BUILTIN_COMMANDS: CommandInfo[] = [
+  { command: '/help', description: 'show keys and commands' },
+  { command: '/mode', description: 'switch permission mode (ask / acceptEdits / plan)' },
+  { command: '/plan', description: 'enter plan mode' },
+  { command: '/effort', description: 'cycle reasoning effort (low / medium / high)' },
+  { command: '/compact', description: 'summarize history to free up context' },
+  { command: '/cost', description: 'show token usage and cost' },
+  { command: '/resume', description: 'resume a previous session' },
+  { command: '/skills', description: 'list installed skills (pick a number to load)' },
+  { command: '/skill', description: 'load a skill by name: /skill <name>' },
+  { command: '/clear', description: 'clear the transcript' },
+  { command: '/quit', description: 'exit Marvis' },
+];
+const EFFORT_LEVELS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
+/** Shift+Tab-style permission-mode cycle for `/mode` with no argument. */
+const MODE_CYCLE: readonly PermissionMode[] = ['ask', 'acceptEdits', 'plan'];
+const ALL_MODES: readonly PermissionMode[] = ['ask', 'plan', 'acceptEdits', 'readOnly', 'yolo'];
 
 export interface AppProps {
-  session: AgentSession;
+  initialSession: AgentSession;
+  /** Builds a fresh session (optionally resuming `resumeId`), reusing the seams. */
+  createSession: (resumeId?: string) => Promise<AgentSession>;
+  /** Shared holder kept in sync with the current session for non-React callers. */
+  sessionRef: { current: AgentSession | undefined };
   buffer: EventBuffer;
   store: UiStore;
   modelRef: string;
@@ -36,17 +58,43 @@ export interface AppProps {
   onExit: () => void;
 }
 
-export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps) {
+export function App({
+  initialSession,
+  createSession,
+  sessionRef,
+  buffer,
+  store,
+  modelRef,
+  cwd,
+  onExit,
+}: AppProps) {
   const theme = useTheme();
+  const { stdout } = useStdout();
+  const [session, setSession] = useState(initialSession);
   const [state, dispatch] = useReducer(
     sessionReducer,
-    initialTuiState({ mode: session.mode, modelRef, cwd }),
+    initialTuiState({
+      mode: initialSession.mode,
+      modelRef,
+      cwd,
+      ...(initialSession.effort ? { effort: initialSession.effort } : {}),
+    }),
   );
 
+  // `working` is the reactive source for `Input`'s disabled state (turns AND
+  // session-mutating slash commands like /compact). `busyRef` stays the
+  // synchronous guard for re-entrancy and the abort-vs-quit key decision.
+  const [working, setWorking] = useState(false);
   const busyRef = useRef(false);
   const lastCtrlCRef = useRef(0);
   const lastAskRef = useRef<unknown>(null);
   const lastPlanRef = useRef<unknown>(null);
+
+  // Keep the shared holder pointed at the live session so the store's
+  // "always allow" seam targets the session `/resume` may have swapped in.
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session, sessionRef]);
 
   const d = useCallback((a: TuiAction) => dispatch(a), []);
   const flushNow = useCallback(() => {
@@ -57,7 +105,10 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
   useEffect(() => {
     const tick = (): void => {
       for (const n of store.drainNotices()) d({ type: 'NOTICE', notice: n });
-      flushNow();
+      // Only flush when the buffer actually changed — otherwise an idle session
+      // would repaint at the tick rate for nothing (`takeDirty` mirrors the web
+      // frontend's `#liveDirty` gate).
+      if (buffer.takeDirty()) flushNow();
       // A completed tool batch ends an agentic step: commit it to the
       // transcript and start a fresh live region. Without this, one long turn
       // (e.g. plan-mode approval then execution) would pin everything since the
@@ -89,6 +140,7 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
     async (text: string) => {
       if (busyRef.current) return;
       busyRef.current = true;
+      setWorking(true);
       d({ type: 'USER', text });
       try {
         await session.runTurn(text);
@@ -109,9 +161,22 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
         buffer.reset();
       } finally {
         busyRef.current = false;
+        setWorking(false);
       }
     },
     [session, buffer, store, d],
+  );
+
+  const skills = useMemo(() => session.listSkills(), [session]);
+
+  // Force-load a skill: nudge the model to call the `skill` tool by name, so the
+  // load goes through the normal path (active-skill state, allowed-tools narrowing).
+  const loadSkill = useCallback(
+    (name: string) => {
+      d({ type: 'CLOSE_OVERLAY' });
+      void runTurn(`Load the "${name}" skill and follow its instructions.`);
+    },
+    [d, runTurn],
   );
 
   const slash = useCallback(
@@ -126,6 +191,9 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
           return;
         case 'clear':
           d({ type: 'NEW_SESSION' });
+          // Ink's <Static> output is permanent; wipe the screen + scrollback so
+          // "cleared" isn't a lie (committed lines otherwise stay on screen).
+          stdout?.write('\x1b[2J\x1b[3J\x1b[H');
           store.pushNotice({
             kind: 'session-start',
             level: 'info',
@@ -133,14 +201,22 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
           });
           return;
         case 'compact': {
-          const saved = await session.compactNow();
-          store.pushNotice({
-            kind: 'compaction',
-            level: 'info',
-            text: saved
-              ? `compacted: ${saved.tokensBefore} → ${saved.tokensAfter} tokens`
-              : 'nothing to compact yet',
-          });
+          if (busyRef.current) return;
+          busyRef.current = true;
+          setWorking(true);
+          try {
+            const saved = await session.compactNow();
+            store.pushNotice({
+              kind: 'compaction',
+              level: 'info',
+              text: saved
+                ? `compacted: ${saved.tokensBefore} → ${saved.tokensAfter} tokens`
+                : 'nothing to compact yet',
+            });
+          } finally {
+            busyRef.current = false;
+            setWorking(false);
+          }
           return;
         }
         case 'cost': {
@@ -158,10 +234,55 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
         case 'resume':
           d({ type: 'OPEN_OVERLAY', overlay: 'resume' });
           return;
+        case 'skills':
+          d({ type: 'OPEN_OVERLAY', overlay: 'skills' });
+          return;
+        case 'skill': {
+          const name = text.slice(1).split(/\s+/)[1];
+          if (!name) {
+            d({ type: 'OPEN_OVERLAY', overlay: 'skills' });
+            return;
+          }
+          if (!skills.some((s) => s.name === name)) {
+            store.pushNotice({ kind: 'error', level: 'error', text: `unknown skill "${name}"` });
+            return;
+          }
+          loadSkill(name);
+          return;
+        }
         case 'plan':
           session.setMode('plan');
           d({ type: 'SET_MODE', mode: 'plan' });
           return;
+        case 'mode': {
+          const arg = text.slice(1).split(/\s+/)[1] as PermissionMode | undefined;
+          const next: PermissionMode =
+            arg && ALL_MODES.includes(arg)
+              ? arg
+              : (MODE_CYCLE[(MODE_CYCLE.indexOf(state.mode) + 1) % MODE_CYCLE.length] ?? 'ask');
+          session.setMode(next);
+          d({ type: 'SET_MODE', mode: next });
+          return;
+        }
+        case 'effort': {
+          const current = session.effort;
+          if (current === undefined) {
+            store.pushNotice({
+              kind: 'session-start',
+              level: 'info',
+              text: 'this model has no reasoning effort',
+            });
+            return;
+          }
+          const arg = text.slice(1).split(/\s+/)[1];
+          const next: ReasoningEffort =
+            arg && EFFORT_LEVELS.includes(arg as ReasoningEffort)
+              ? (arg as ReasoningEffort)
+              : EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(current) + 1) % EFFORT_LEVELS.length]!;
+          session.setEffort(next);
+          d({ type: 'SET_EFFORT', effort: next });
+          return;
+        }
         default: {
           const expanded = await session.expandSlash(text);
           if (expanded !== null) await runTurn(expanded);
@@ -170,7 +291,7 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
         }
       }
     },
-    [session, store, d, runTurn, onExit],
+    [session, store, d, runTurn, onExit, stdout, state.mode, skills, loadSkill],
   );
 
   const submit = useCallback(
@@ -180,12 +301,49 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
     [slash, runTurn],
   );
 
-  const suggestions = useMemo(() => {
-    const mcp = session.listSlashCommands().map((c) => `/${c.command}`);
+  const commands = useMemo<CommandInfo[]>(() => {
+    const mcp: CommandInfo[] = session
+      .listSlashCommands()
+      .map((c) => ({ command: `/${c.command}`, description: `MCP · ${c.server}` }));
     return [...BUILTIN_COMMANDS, ...mcp];
   }, [session]);
 
   const [sessions, setSessions] = useState<{ id: string; mtimeMs: number }[]>([]);
+
+  // Resume a session in-process: build the replacement first (a bad id then
+  // leaves the current session intact), swap it in, and rebuild the transcript
+  // from its persisted history via the shared `entriesFromTranscript`.
+  const resume = useCallback(
+    async (id: string) => {
+      if (busyRef.current) return;
+      try {
+        const next = await createSession(id);
+        await session.close();
+        buffer.reset();
+        setSession(next);
+        const agentDir = `${await findProjectRoot(cwd)}/${AGENT_DIR}`;
+        const items = await loadTranscript(agentDir, id).catch(() =>
+          next.messages.map((message) => ({ type: 'message' as const, ts: 0, message })),
+        );
+        d({
+          type: 'HYDRATE',
+          entries: entriesFromTranscript(items),
+          mode: next.mode,
+          ...(next.effort ? { effort: next.effort } : {}),
+          ...(next.sessionUsage ? { usage: next.sessionUsage } : {}),
+          ...(next.contextSnapshot ? { context: next.contextSnapshot } : {}),
+        });
+        d({ type: 'CLOSE_OVERLAY' });
+      } catch (err) {
+        store.pushNotice({
+          kind: 'error',
+          level: 'error',
+          text: `resume failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    },
+    [session, createSession, buffer, cwd, store, d],
+  );
 
   useInput((input, key) => {
     if (store.pendingAsk) {
@@ -201,7 +359,18 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
       return;
     }
     if (state.overlay) {
-      if (key.escape) d({ type: 'CLOSE_OVERLAY' });
+      if (key.escape) {
+        d({ type: 'CLOSE_OVERLAY' });
+        return;
+      }
+      if (state.overlay === 'resume' && /^[1-9]$/.test(input)) {
+        const pick = sessions[Number(input) - 1];
+        if (pick) void resume(pick.id);
+      }
+      if (state.overlay === 'skills' && /^[1-9]$/.test(input)) {
+        const pick = skills[Number(input) - 1];
+        if (pick) loadSkill(pick.name);
+      }
       return;
     }
     if (key.escape) {
@@ -247,36 +416,51 @@ export function App({ session, buffer, store, modelRef, cwd, onExit }: AppProps)
 
   return (
     <>
-      <Static items={state.entries}>
-        {(entry) => (
-          <HistoryEntry key={entry.id} entry={entry} theme={theme} expanded={state.expandedOutput} />
-        )}
-      </Static>
+      <ErrorBoundary theme={theme}>
+        <Static items={state.entries}>
+          {(entry) => (
+            <HistoryEntry key={entry.id} entry={entry} theme={theme} expanded={state.expandedOutput} />
+          )}
+        </Static>
 
-      {/* Live (in-flight) region */}
-      {(state.live.thinking !== '' || state.live.text !== '' || state.live.tools.length > 0) && (
-        <>
-          {state.live.thinking !== '' && <Text color={theme.faint}>{state.live.thinking}</Text>}
-          {state.live.text !== '' && <Markdown text={state.live.text} theme={theme} />}
-          {state.live.tools.map((t) => (
-            <ToolCard key={t.id} tool={t} expanded={state.expandedOutput} theme={theme} />
-          ))}
-        </>
-      )}
+        {/* Live (in-flight) region */}
+        {(state.live.thinking !== '' || state.live.text !== '' || state.live.tools.length > 0) && (
+          <>
+            {state.live.thinking !== '' && <Text color={theme.faint}>{state.live.thinking}</Text>}
+            {state.live.text !== '' && <Markdown text={state.live.text} theme={theme} />}
+            {state.live.tools.map((t) => (
+              <ToolCard key={t.id} tool={t} expanded={state.expandedOutput} theme={theme} />
+            ))}
+          </>
+        )}
+      </ErrorBoundary>
 
       {state.pendingAsk && <PermissionModal ask={state.pendingAsk} theme={theme} />}
       {state.pendingPlan && <PlanModal plan={state.pendingPlan} theme={theme} />}
-      {state.overlay && <Overlay kind={state.overlay} theme={theme} sessions={sessions} />}
+      {state.overlay && (
+        <Overlay
+          kind={state.overlay}
+          theme={theme}
+          sessions={sessions}
+          skills={skills}
+          onPick={resume}
+        />
+      )}
 
-      <Rule theme={theme} />
-      <ModeBar mode={state.mode} modelRef={state.modelRef} cwd={state.cwd} theme={theme} />
-      <MeterBar usage={state.usage} context={state.context} theme={theme} />
       <Input
         onSubmit={submit}
-        suggestions={suggestions}
+        commands={commands}
         theme={theme}
-        disabled={busyRef.current || state.pendingAsk !== null || state.pendingPlan !== null}
+        disabled={working || state.pendingAsk !== null || state.pendingPlan !== null}
       />
+      <ModeBar
+        mode={state.mode}
+        modelRef={state.modelRef}
+        effort={state.effort}
+        cwd={state.cwd}
+        theme={theme}
+      />
+      <MeterBar usage={state.usage} context={state.context} theme={theme} />
     </>
   );
 }

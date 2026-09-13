@@ -39,6 +39,30 @@ describe('sessionReducer (TUI wrapper)', () => {
     expect(s.expandedOutput).toBe(false);
   });
 
+  it('HYDRATE replaces the transcript, clears pending, and keeps TUI-only fields', () => {
+    let s = base();
+    s = sessionReducer(s, { type: 'USER', text: 'old turn' });
+    s = sessionReducer(s, { type: 'PENDING_ASK', ask: { toolName: 'bash', input: {}, reason: 'run?' } });
+    s = sessionReducer(s, { type: 'TOGGLE_EXPAND' });
+    s = sessionReducer(s, {
+      type: 'HYDRATE',
+      entries: [
+        { kind: 'user', id: 0, text: 'resumed' },
+        { kind: 'assistant', id: 1, thinking: '', text: 'hello again', tools: [] },
+      ],
+      usage: { inputTokens: 3, outputTokens: 1, cachedInputTokens: 0 },
+      mode: 'plan',
+    });
+    expect(s.entries).toHaveLength(2);
+    expect(s.entries[0]).toMatchObject({ kind: 'user', text: 'resumed' });
+    expect(s.pendingAsk).toBeNull();
+    expect(s.mode).toBe('plan');
+    expect(s.usage?.inputTokens).toBe(3);
+    // TUI-only fields are untouched by the shared HYDRATE fold.
+    expect(s.cwd).toBe('/tmp');
+    expect(s.expandedOutput).toBe(true);
+  });
+
   it('NEW_SESSION resets entries/live (shared) and overlay/expandedOutput (TUI-only), keeping cwd', () => {
     let s = base();
     s = sessionReducer(s, { type: 'USER', text: 'x' });

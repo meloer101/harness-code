@@ -87,7 +87,8 @@ function block(token: Token, theme: Theme): React.ReactNode {
         <>
           {list.items.map((item, i) => (
             <Text key={i}>
-              {list.ordered ? `${start + i}. ${item.text ?? ''}` : `• ${item.text ?? ''}`}
+              {list.ordered ? `${start + i}. ` : '• '}
+              {inline(listItemInlines(item), theme)}
             </Text>
           ))}
         </>

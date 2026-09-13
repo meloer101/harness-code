@@ -26,6 +26,16 @@ describe('Markdown', () => {
     expect(frame).toContain('• two');
   });
 
+  it('formats inline markup inside list items (not as literal markdown)', () => {
+    const { lastFrame } = render(<Markdown text={'- some **bold** and `code`'} theme={DARK} />);
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('• some');
+    expect(frame).toContain('bold');
+    expect(frame).toContain('code');
+    expect(frame).not.toContain('**bold**');
+    expect(frame).not.toContain('`code`');
+  });
+
   it('renders a code block as dim monospace lines', () => {
     const { lastFrame } = render(<Markdown text={'```\nline1\nline2\n```'} theme={DARK} />);
     const frame = lastFrame() ?? '';

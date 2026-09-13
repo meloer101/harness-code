@@ -76,6 +76,39 @@ describe('EventBuffer', () => {
     expect(b.snapshot()).toMatchObject({ thinking: '', text: 'turn one. the answer' });
   });
 
+  describe('takeDirty', () => {
+    it('is false with no events, true after a change, and clears on read', () => {
+      const b = new EventBuffer();
+      expect(b.takeDirty()).toBe(false);
+
+      b.onEvent({ type: 'text_delta', text: 'hi' });
+      expect(b.takeDirty()).toBe(true);
+      expect(b.takeDirty()).toBe(false); // cleared
+
+      b.onEvent(start('a'));
+      expect(b.takeDirty()).toBe(true);
+    });
+
+    it('a context event alone does not mark the buffer dirty', () => {
+      const b = new EventBuffer();
+      b.onEvent({
+        type: 'context',
+        usedTokens: 1,
+        windowTokens: 10,
+        ratio: 0.1,
+        breakdown: { system: 0, skills: 0, projectMemory: 0, toolSchemas: 0, history: 1, total: 1 },
+      });
+      expect(b.takeDirty()).toBe(false);
+    });
+
+    it('reset clears the dirty flag', () => {
+      const b = new EventBuffer();
+      b.onEvent({ type: 'text_delta', text: 'hi' });
+      b.reset();
+      expect(b.takeDirty()).toBe(false);
+    });
+  });
+
   describe('takeCompletedBatch', () => {
     it('returns null while a tool is still in flight', () => {
       const b = new EventBuffer();

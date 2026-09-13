@@ -21,18 +21,27 @@ export class EventBuffer {
   private batchBoundary = false;
   /** Lengths of `live.thinking` / `live.text` when the current model call began. */
   private turnMark = { thinking: 0, text: 0 };
+  /**
+   * Set whenever an event changed the live snapshot, cleared by `takeDirty()`.
+   * Lets a poll-loop frontend skip the flush (and the re-render it triggers)
+   * when nothing changed — see `takeDirty` and docs/web.md, "Delta coalescing".
+   */
+  private dirty = false;
 
   onEvent(e: AgentEvent): void {
     switch (e.type) {
       case 'thinking_delta':
         this.live.thinking += e.text;
+        this.dirty = true;
         break;
       case 'text_delta':
         this.live.text += e.text;
+        this.dirty = true;
         break;
       case 'context':
         // Emitted once at the start of every model call: remember where this
         // turn's output begins, so a retry can drop exactly this turn's deltas.
+        // No visible change to the live snapshot, so it doesn't mark dirty.
         this.turnMark = { thinking: this.live.thinking.length, text: this.live.text.length };
         break;
       case 'turn_retry':
@@ -40,11 +49,13 @@ export class EventBuffer {
         // from scratch. It failed before any tool ran, so no tool items exist.
         this.live.thinking = this.live.thinking.slice(0, this.turnMark.thinking);
         this.live.text = this.live.text.slice(0, this.turnMark.text);
+        this.dirty = true;
         break;
       case 'tool_call_start': {
         const tool: ToolItem = { id: e.id, name: e.name, input: e.input, running: true };
         this.live.tools.push(tool);
         this.byId.set(e.id, tool);
+        this.dirty = true;
         break;
       }
       case 'tool_call_end': {
@@ -52,6 +63,7 @@ export class EventBuffer {
         if (tool) {
           tool.running = false;
           tool.result = e.result;
+          this.dirty = true;
           if (!this.hasRunningTool()) this.batchBoundary = true;
         }
         break;
@@ -59,6 +71,18 @@ export class EventBuffer {
       default:
         break;
     }
+  }
+
+  /**
+   * True (clearing the flag) if the live snapshot changed since the last call.
+   * A poll-loop frontend uses this to flush only on change, so an idle session
+   * stops re-rendering — the web frontend's `SessionModel` does the same with
+   * its `#liveDirty` flag.
+   */
+  takeDirty(): boolean {
+    const was = this.dirty;
+    this.dirty = false;
+    return was;
   }
 
   snapshot(): LiveSnapshot {
@@ -105,5 +129,6 @@ export class EventBuffer {
     this.byId.clear();
     this.batchBoundary = false;
     this.turnMark = { thinking: 0, text: 0 };
+    this.dirty = false;
   }
 }

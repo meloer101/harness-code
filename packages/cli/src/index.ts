@@ -39,6 +39,7 @@ import type {
   MemoryScope,
   ModelRequest,
   PermissionMode,
+  ReasoningEffort,
   TraceSummary,
 } from '@harness-code/core';
 import { spawn } from 'node:child_process';
@@ -205,7 +206,7 @@ program
   .command('agent', { isDefault: true })
   .description(
     'Run the agent loop with tools (read/write/edit/glob/grep/bash/todo). ' +
-      'Omit <prompt> to start an interactive session — this is also what bare `hc` runs.',
+      'Omit <prompt> to start an interactive session — this is also what bare `marvis` runs.',
   )
   .argument('[prompt]', 'the task to hand to the agent; omit to start an interactive session')
   .option('-m, --model <ref>', 'provider/model, e.g. deepseek/deepseek-v4-flash')
@@ -218,6 +219,7 @@ program
     '--mode <mode>',
     'permission mode: ask|plan|acceptEdits|readOnly|yolo (overrides settings.json)',
   )
+  .option('--effort <level>', 'reasoning effort for reasoning models: minimal|low|medium|high')
   .option('--allow <rule>', 'add an allow rule, e.g. "Bash(git status:*)" (repeatable)', collect, [])
   .option('--ask <rule>', 'add an ask rule (repeatable)', collect, [])
   .option('--deny <rule>', 'add a deny rule (repeatable)', collect, [])
@@ -241,6 +243,7 @@ program
         maxTokens?: number;
         resume?: string;
         mode?: PermissionMode;
+        effort?: ReasoningEffort;
         allow: string[];
         ask: string[];
         deny: string[];
@@ -266,6 +269,7 @@ program
           maxCost: opts.maxCost,
           maxTokens: opts.maxTokens,
           ...(opts.mode ? { mode: opts.mode } : {}),
+          ...(opts.effort ? { reasoningEffort: opts.effort } : {}),
           allow: opts.allow,
           ask: opts.ask,
           deny: opts.deny,

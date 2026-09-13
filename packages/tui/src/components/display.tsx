@@ -7,7 +7,13 @@ import React from 'react';
 import { Box, Text } from 'ink';
 
 import { describeToolInput, fmtTokens, fmtUSD } from '@harness-code/core';
-import type { ContextSnapshot, Notice, PermissionMode, Usage } from '@harness-code/core';
+import type {
+  ContextSnapshot,
+  Notice,
+  PermissionMode,
+  ReasoningEffort,
+  Usage,
+} from '@harness-code/core';
 
 import { Markdown } from '../markdown/render.js';
 import type { Entry, ToolItem } from '../state/reducer.js';
@@ -23,11 +29,13 @@ export function Rule({ theme }: { theme: Theme }) {
 export function ModeBar({
   mode,
   modelRef,
+  effort,
   cwd,
   theme,
 }: {
   mode: PermissionMode;
   modelRef: string;
+  effort?: ReasoningEffort;
   cwd: string;
   theme: Theme;
 }) {
@@ -45,7 +53,8 @@ export function ModeBar({
       <Text color={color}>● {mode}</Text>
       <Text color={theme.dim}>
         {'  '}
-        {modelRef} · {base}
+        {modelRef}
+        {effort ? ` ${effort}` : ''} · {base}
       </Text>
     </Text>
   );
@@ -66,7 +75,10 @@ export function MeterBar({
   let ctxColor = theme.dim;
   if (context) {
     const pct = Math.round(context.ratio * 100);
-    ctx = `ctx${pct}%`;
+    const cells = 10;
+    const filled = Math.max(0, Math.min(cells, Math.round(context.ratio * cells)));
+    const bar = '█'.repeat(filled) + '░'.repeat(cells - filled);
+    ctx = `ctx [${bar}] ${pct}% ${fmtTokens(context.usedTokens)}/${fmtTokens(context.windowTokens)}`;
     ctxColor = context.ratio >= 0.92 ? theme.error : context.ratio >= 0.8 ? theme.warning : theme.dim;
   }
   return (
@@ -89,7 +101,11 @@ export function ToolCard({
   expanded: boolean;
   theme: Theme;
 }) {
-  const summary = truncate(describeToolInput(tool.name, tool.input), 60, 'middle');
+  const { columns } = useTerminalSize();
+  // Fit the summary to the terminal (minus the card's indent + "▸ name " prefix),
+  // clamped so it never vanishes on a narrow window or sprawls on a wide one.
+  const summaryWidth = Math.max(20, Math.min(columns - 8, 80));
+  const summary = truncate(describeToolInput(tool.name, tool.input), summaryWidth, 'middle');
   const showOutput = (expanded || tool.result?.isError === true) && tool.result;
   return (
     <Box flexDirection="column" paddingLeft={2}>

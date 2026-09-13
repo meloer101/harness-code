@@ -28,6 +28,20 @@ describe('MeterBar', () => {
     const { lastFrame } = render(<MeterBar usage={undefined} context={undefined} theme={DARK} />);
     expect(lastFrame() ?? '').toBe('');
   });
+
+  it('renders a context progress bar with percentage and used/window', () => {
+    const { lastFrame } = render(
+      <MeterBar
+        usage={{ inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 }}
+        context={{ usedTokens: 16000, windowTokens: 200000, ratio: 0.08 }}
+        theme={DARK}
+      />,
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('ctx [');
+    expect(frame).toContain('8%');
+    expect(frame).toContain('16.0k/200.0k');
+  });
 });
 
 describe('ToolCard', () => {

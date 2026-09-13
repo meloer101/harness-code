@@ -7,14 +7,14 @@
  * how events turn into state. See docs/web.md, "Events".
  */
 
-import type { PermissionMode } from '@harness-code/core';
+import type { PermissionMode, ReasoningEffort } from '@harness-code/core';
 import type { FoldAction, FoldState } from '@harness-code/protocol';
 import { emptyLive, foldReducer, initialFoldState } from '@harness-code/protocol';
 
 export type { Entry, LiveSnapshot, PendingAsk, PendingPlan, ToolItem } from '@harness-code/protocol';
 export { emptyLive };
 
-export type OverlayKind = 'help' | 'resume';
+export type OverlayKind = 'help' | 'resume' | 'skills';
 
 export interface TuiState extends FoldState {
   cwd: string;
@@ -32,9 +32,14 @@ export function initialTuiState(opts: {
   mode: PermissionMode;
   modelRef: string;
   cwd: string;
+  effort?: ReasoningEffort;
 }): TuiState {
   return {
-    ...initialFoldState({ mode: opts.mode, modelRef: opts.modelRef }),
+    ...initialFoldState({
+      mode: opts.mode,
+      modelRef: opts.modelRef,
+      ...(opts.effort ? { effort: opts.effort } : {}),
+    }),
     cwd: opts.cwd,
     overlay: null,
     expandedOutput: false,

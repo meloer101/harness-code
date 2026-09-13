@@ -14,6 +14,7 @@ import { resolveBudgets } from '../config/budgets.js';
 import { loadSettings } from '../config/settings.js';
 import type { PermissionMode } from '../permissions/index.js';
 import { ProviderRegistry } from '../provider/router.js';
+import type { ReasoningEffort } from '../provider/types.js';
 import type { AgentSessionConfig } from './session-runner.js';
 
 export interface BuildSessionConfigOptions {
@@ -24,6 +25,8 @@ export interface BuildSessionConfigOptions {
   maxCost?: number;
   maxTokens?: number;
   mode?: PermissionMode;
+  /** Reasoning-effort level. Falls back to `settings.reasoningEffort`. */
+  reasoningEffort?: ReasoningEffort;
   allow?: string[];
   ask?: string[];
   deny?: string[];
@@ -73,6 +76,9 @@ export async function buildSessionConfig(
     settings,
     budgets,
     ...(opts.mode ? { mode: opts.mode } : {}),
+    ...(opts.reasoningEffort ?? settings.reasoningEffort
+      ? { reasoningEffort: opts.reasoningEffort ?? settings.reasoningEffort }
+      : {}),
     allow: opts.allow ?? [],
     ask: opts.ask ?? [],
     deny: opts.deny ?? [],
