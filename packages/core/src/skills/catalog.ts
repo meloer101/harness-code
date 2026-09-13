@@ -66,7 +66,15 @@ export class SkillCatalog {
       const s = this.byName.get(n)!;
       return `- ${s.name}: ${s.description}`;
     });
-    return `<available_skills>\n${MANIFEST_PREAMBLE}\n\n${lines.join('\n')}\n</available_skills>`;
+    // When the token cap left skills out, say so and point at the escape hatch —
+    // otherwise those skills are loadable only by a name the model never sees.
+    const overflow =
+      this.dropped.length > 0
+        ? `\n\n${this.dropped.length} more skill${this.dropped.length === 1 ? '' : 's'} ` +
+          `${this.dropped.length === 1 ? 'is' : 'are'} available but not listed here; ` +
+          'call the `list_skills` tool to see the full catalog.'
+        : '';
+    return `<available_skills>\n${MANIFEST_PREAMBLE}\n\n${lines.join('\n')}${overflow}\n</available_skills>`;
   }
 
   manifestTokens(count: TokenCounter = heuristicTokenCount): number {

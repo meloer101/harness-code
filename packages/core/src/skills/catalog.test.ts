@@ -20,6 +20,8 @@ describe('SkillCatalog', () => {
     expect(m).toContain('- code-review: does a thing');
     expect(m).toContain('- writing-tests: does a thing');
     expect(cat.get('code-review')?.name).toBe('code-review');
+    // nothing dropped -> no overflow hint
+    expect(m).not.toContain('list_skills');
   });
 
   it('returns no manifest when empty', () => {
@@ -38,5 +40,9 @@ describe('SkillCatalog', () => {
     expect(cat.advertised.length + cat.dropped.length).toBe(200);
     // a dropped skill is still loadable by exact name
     expect(cat.get(cat.dropped[0]!)).toBeDefined();
+    // and the manifest points at the escape hatch for the ones it left out
+    const m = cat.manifest()!;
+    expect(m).toContain('list_skills');
+    expect(m).toContain(`${cat.dropped.length} more skills`);
   });
 });

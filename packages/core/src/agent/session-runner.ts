@@ -42,7 +42,7 @@ import type {
 import { builtinTools, exitPlanModeTool } from '../tools/index.js';
 import { ToolRegistry } from '../tools/registry.js';
 import type { AnyToolSpec } from '../tools/types.js';
-import { SkillCatalog, createSkillTool, discoverSkills } from '../skills/index.js';
+import { SkillCatalog, createSkillTool, createListSkillsTool, discoverSkills } from '../skills/index.js';
 import {
   MemoryCatalog,
   MemoryWriteBuffer,
@@ -744,6 +744,11 @@ export class AgentSession {
       ...builtinTools(),
       ...(activeMode === 'plan' ? [exitPlanModeTool] : []),
       ...(this.#skillCatalog.size > 0 ? [createSkillTool(this.#skillCatalog)] : []),
+      // Only when the manifest token cap left skills out — otherwise the manifest
+      // already lists every skill and this tool would just duplicate it.
+      ...(this.#skillCatalog.dropped.length > 0
+        ? [createListSkillsTool(this.#skillCatalog)]
+        : []),
       ...(this.#config.memory !== false ? [createMemoryTool(this.#memoryBuffer)] : []),
       ...(this.#taskTool ? [this.#taskTool] : []),
       ...this.#mcpToolSpecs,
