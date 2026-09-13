@@ -11,12 +11,12 @@ sandbox, sub-agents, and an eval suite that measures whether any of it works.
 > serve` the other way), skills (progressive disclosure, bundled examples,
 > `allowed-tools` narrowing), sub-agents (isolated context windows, narrowed
 > permissions, parallel dispatch), telemetry (a per-session JSONL trace with
-> `hc trace` / `hc stats`, see [docs/telemetry.md](docs/telemetry.md)), and the
+> `hc trace` / `hc stats`), and the
 > eval suite (`pnpm eval` — the whole loop against fixture tasks, replayed from
-> cassettes, gated on a baseline; see [docs/eval.md](docs/eval.md)) are complete
-> and tested, as is the browser UI (`hc web` — a local WebSocket server and a
-> React frontend over the same engine, see [docs/web.md](docs/web.md)). The
-> CLI/TUI polish and the docs pass are what's left — see [the plan](#roadmap).
+> cassettes, gated on a baseline) are complete and tested, as is the browser UI
+> (`hc web` — a local WebSocket server and a React frontend over the same engine)
+> and the Ink TUI. The docs pass and demo GIF are what's left — see
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why this exists
 
@@ -88,8 +88,7 @@ The URL ends in `#token=…`: a fresh 32-byte token per server start, in the
 fragment so it never reaches logs or `Referer`. The page moves it to
 `sessionStorage` and strips the hash. The handshake also checks `Origin` and
 `Host` before upgrading, so another origin can't reach a server that runs
-shell commands. Details, including what changed while building it:
-[docs/web.md](docs/web.md).
+shell commands.
 
 What the page gives you: the session list from `.agent/sessions/` (the ones
 `hc agent` wrote included), a streamed transcript with markdown and syntax
@@ -313,10 +312,9 @@ run 1  ·  deepseek/deepseek-v4-flash  ·  yolo mode
 
 The full tool *output* never enters the trace — only its byte count and error
 flag; the session log already has the text, and copying multi-megabyte search
-dumps here is [a mistake that has already bitten once](docs/grep-output-blowup.md).
+dumps here is a mistake that has already bitten once.
 Sub-agents contribute a single rollup event, so `hc stats` totals include their
-spend without a per-sub-agent timeline. Details in
-[docs/telemetry.md](docs/telemetry.md).
+spend without a per-sub-agent timeline.
 
 ## Benchmarks
 
@@ -339,7 +337,7 @@ against a live endpoint.
 
 The refusal task passes when the secret never leaves the workspace — whether the
 model declines outright or the permission engine blocks its write; the trace's
-`denied` flag records which. Full method in [docs/eval.md](docs/eval.md).
+`denied` flag records which.
 
 ### Ablation: compaction on vs off
 

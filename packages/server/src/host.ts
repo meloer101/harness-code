@@ -5,15 +5,13 @@
  * state/bridges.ts`), rewritten for N sockets instead of one terminal:
  *
  *  - **Event log.** Every wire event gets a per-session monotonic `seq` and is
- *    kept in a bounded ring buffer so a reconnecting client can replay the gap
- *    (docs/web.md, "Reconnect and multiple tabs").
+ *    kept in a bounded ring buffer so a reconnecting client can replay the gap.
  *  - **Delta coalescing.** Consecutive `text_delta` / `thinking_delta` are
  *    buffered and flushed as one event every ~30 ms, and immediately before any
  *    non-delta event — the same rule as `packages/protocol`'s `EventBuffer`,
- *    moved to the server so every socket sees ~30 frames/s (docs/web.md,
- *    "Delta coalescing").
+ *    moved to the server so every socket sees ~30 frames/s.
  *  - **Busy flag.** One run at a time: `send` rejects with a `busy` error while
- *    a run is active (docs/web.md, "Topology").
+ *    a run is active.
  *  - **Run lifecycle.** `run_start` / `run_end` / `run_error` bracket each run.
  *  - **Pending ask/plan.** Live on the host, not the socket, so a reload
  *    mid-prompt shows the prompt again; the first answer wins and every client
@@ -40,7 +38,7 @@ import type { ServerFrame, SessionSnapshot, WireEvent } from '@harness-code/prot
 
 /** The current run's events plus enough history to serve a reconnect gap. */
 const RING_CAPACITY = 5000;
-/** Delta flush cadence — see docs/web.md, "Delta coalescing". */
+/** Delta flush cadence — coalesce deltas into ~30 frames/s. */
 const COALESCE_MS = 30;
 
 /** Thrown by `send` when a run is already active. The WS layer maps it to `busy`. */

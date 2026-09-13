@@ -1,5 +1,5 @@
 /**
- * The seam between the web UI and its host (docs/web-frontend.md, M3). v1 only
+ * The seam between the web UI and its host. v1 only
  * runs in a browser; an Electron shell would provide its own `Platform` and
  * everything above this file stays unchanged.
  */

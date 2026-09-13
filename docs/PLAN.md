@@ -21,7 +21,7 @@
 > | 2026-09-06 | Phase 3 bash 审查完全用 AST | 命令替换（`$(...)`/反引号）的硬拒绝用了一个字符串正则前置检查，其余复合命令拆分和高危规则判定才是 `shell-quote` AST | `shell-quote` 本身不会对命令替换报错或拒绝解析，AST 遍历不到"这里有命令替换"这个事实，正则前置检查更直接；不影响"逐段 AST 判定"的核心设计 |
 > | 2026-09-06 | Phase 3 CLI 权限模式选择 | `hc agent` 非交互场景下固定用 `nonInteractiveAskHandler`（ask 一律 deny），交互式 ask handler 留空 | 目前只有一次性 CLI，没有人可以回答"是否允许"；交互式 handler 等 Phase 9 TUI 落地后再接，`AskHandler` 接口已经预留好 |
 > | 2026-09-06 | macOS `sandbox-exec` profile 标为 stretch，先不做 | 提前做完：`permissions/macos-sandbox.ts`，workspace 读写、其余只读，`(allow default)` 不动读/网络/进程 | 真实跑通 `hc agent` 后发现纯文本审查（AST + 黑名单）拦不住"合法工具的普通用法"，比如 `echo x > /tmp/y` 这种重定向——不在任何硬拒绝规则里，也不该被枚举式加规则去堵；OS 级沙箱是唯一能兜住"审查漏判"的层。手动实测：workspace 外写入被内核拒绝（`Operation not permitted`），workspace 内写入正常。同一次实测也发现 `Bash(node:*)` 这类允许规则会被 `node -e` 逃逸成近乎无限制执行，顺带把 `python/perl/ruby/node` 的内联求值旗标改成无条件硬拒绝 |
-> | 2026-09-06 | Phase 4 的 token 预算 / 上下文可见性、Phase 6 的 Plan Mode 按原顺序做 | 提前到中间里程碑 **Phase 3.5**（见 [PHASE-3.5.md](./PHASE-3.5.md)）：token 计量 + 阈值告警 + 优雅停止、`ask` 真正弹问、完整 Plan Mode（探索→出计划→批准→切换执行） | f63eb8c 落地 REPL 后"没人能回答 ask"的前提消失；长会话撞 provider 400 是日常可用性硬门槛，只做可见性成本很低。真正的压缩（`compactor.ts` / `ledger.ts` / `AGENTS.md` 项目记忆）仍留在 Phase 4 |
+> | 2026-09-06 | Phase 4 的 token 预算 / 上下文可见性、Phase 6 的 Plan Mode 按原顺序做 | 提前到中间里程碑 **Phase 3.5**（见 PHASE-3.5.md）：token 计量 + 阈值告警 + 优雅停止、`ask` 真正弹问、完整 Plan Mode（探索→出计划→批准→切换执行） | f63eb8c 落地 REPL 后"没人能回答 ask"的前提消失；长会话撞 provider 400 是日常可用性硬门槛，只做可见性成本很低。真正的压缩（`compactor.ts` / `ledger.ts` / `AGENTS.md` 项目记忆）仍留在 Phase 4 |
 > | 2026-09-07 | Phase 4 一次做完（compactor + ledger + 项目记忆） | 拆成 **Phase 4a（本次，只做 `compactor.ts`）** 与 Phase 4b（`ledger.ts` + `AGENTS.md`/`CLAUDE.md`）。4a：`onContextPressure` 之外新增 `onCompact` hook，`≥0.92` 自动触发；机制学 Claude Code（阈值→整段摘要→用结果继续），digest 内容学 Manus（任务状态 + "协作/代码/工具/输出"风格备忘，以 `AGENT_CONVENTIONS` 为基线只记偏差）；摘要走主模型（`smallModel` 可选覆盖）；`--no-compact` 关闭；会话 `.jsonl` 存压缩后快照，`--resume` 尊重压缩边界 | compactor 是四块里最能量化的、也最影响日常可用性，先单独跑通并验证；ledger 与压缩协同（压缩时判断哪些文件内容可安全丢）留到 4b 一起做 |
 > | 2026-09-07 | Phase 4b：`ledger.ts` 独立模块，含"重复读折叠成指针" | **不做重复读折叠**；ledger 收窄为 `SessionState.readMtime()` + `edit`/`write` 的 mtime 失效检查（读之后文件被外部改动 → 拒绝并提示重新 read）。外加 `context/memory.ts`：`AGENTS.md`/`CLAUDE.md` 从项目根到 cwd 逐层加载（+ `~/.agent`），作为 `project_memory` 段插在 `conventions`（cacheBreakpoint）之后 | 模型重复 read 未改动文件多是合理的上下文刷新（lost-in-the-middle），给指针 stub 恰在最该帮忙时帮不上；compactor 落地后重复副本会在压缩时被整段摘要掉；未到阈值就折叠得回写活动历史、打断 KV-cache。失效检查和项目记忆才是没争议的价值 |
 > | 2026-09-07 | Phase 4 收尾：`truncate.ts` / `cache.ts` / `budget.ts` | `truncate.ts`：`truncateHeadTail`（行对齐头尾截断，从 bash 提取）+ `truncateList`（grep 现在报 "showing 200 of N" 而非静默截断）。`cache.ts`：`SYSTEM_SEGMENT_ORDER` + `orderSystemSegments`（前缀顺序从隐性约定变成 `buildAgentSystemPrompt` 收尾强制的契约）+ `cacheHitRate`（每轮 `cached N (P%)`、会话结束 `cache P% of Nk input`）。`budget.ts`：**只做分类占用核算**（`analyzeStableParts` + `context` 事件带 `breakdown`，CLI 显示 `sys/mem/tools/hist`）—— **不做配额器** | 现在唯一真实降级杠杆是压缩历史（已有），项目记忆有上限、工具输出有截断，配额器没有实际分支可做；真正需要配额是 skills 渐进式披露落地后（清单 token 是核心输入）。降级逻辑推到 Phase 6。`cacheBreakpoint` 字段对当前 OpenAI-compat 面是死配置，留给 Phase 7 原生 Anthropic provider |
@@ -42,6 +42,9 @@
 > | 2026-09-08 | Phase 8 Eval：8–10 个任务，`pnpm eval` 用「mock provider」全绿 | **5 个任务**（`fix-null-deref` / `add-slug-helper` / `extract-duplication` / `cover-parse-edge-cases` / `refuse-exfiltrate-secret`），mock provider = **录制回放 cassette**（不是 `ScriptedProvider`）。新 workspace 包 `evals/`：`harness.ts`（`runAgentTask` = `cli/index.ts` agent 段的 ~80 行无头蒸馏，不抽 CLI —— 后者和 REPL/MCP/prompter 缠死）、`tasks.ts`、`runner.ts`（每任务跑 N 次：`realpath(mkdtemp)` → `cp` fixture → 跑 → 跑 `assert.mjs`）、`report.ts`（`pass@1/@k`、均值、`baseline.json` 回归门：`pass@k` 掉或 token/成本 涨 >15% → exit 1）、`cli.ts`。fixture = 无依赖 `node:test` 项目 + `package.json`（无 git —— 没有任务需要 `git diff`，`.git` 内容还会破坏确定性）。CI 加 `pnpm eval` 一步（回放，无凭据）。消融：只做 **compaction 开/关**一张表（`--ablation compaction`，收窄 window 到 20k 逼出压缩，真实模型跑），子 Agent / native-vs-prompt 只留 `HarnessOptions` 开关。+20 tests（401 total）。 | 8–10 个 fixture + cassette + assert 是独立的大活，5 个先把框架 / runner / 回归门 / 确定性跑通，加任务只是粘贴；ScriptedProvider 测不了「真实模型能不能解」，cassette 才对 |
 > | 2026-09-08 | Phase 8 Eval：cassette 跨机器回放 | `mock.ts` 加 **对称路径变换**：`RecordingProvider` 把录制时 workspace 绝对路径（system prompt `environment` 段、模型在 tool call 里写的路径、`grep` 输出都带）在 cassette 全文 → `$HC_WORKSPACE` 哨兵；`ReplayProvider` yield 事件时哨兵 → 本次 temp 目录（工具能落地），算 key 前再 → 哨兵（命中录制）。外加 `keyScrub`（`node --test` 的 `duration_ms:` 每次不同 → 归一）。`requestKey(req, redact?)` 加可选第二参，`pathRedactor` / `pathExpander` / `WORKSPACE_SENTINEL` 导出。 | fixture 走 `mkdtemp` 随机路径，不做这个 cassette 换台机器（或换一次 run）就全 miss；这本就是 `requestKey`「排除非确定性」该干的事，只是范围扩到路径 |
 > | 2026-09-08 | Phase 8 Eval：拒绝正确率靠 trace | trace 里权限 `deny` 和「工具跑了但报错」长得一样（都只有 `isError`）。给 `tool_call` 事件加 `denied?: boolean`（`AgentLoop.runToolCalls` 里 `decision` 现成的）；`summarizeTrace` 加 `deniedToolCalls`、`rollupStats` 加 `totalDeniedToolCalls`、`hc trace` 渲染成 `denied`。拒绝任务的判定 = `assert.mjs`（禁止的结果没发生），`deniedToolCalls` 只报不闸 —— 文字婉拒和引擎拦截都算对。 | 「拒绝正确率」是 PLAN 明列指标，trace 是指标来源，这个字段小且顺带让 `hc trace` 显示对 |
+> | 2026-09-12 | Phase 11 记忆：ask 模式只靠 `evaluateWholeTool(..., true)` 免确认；种子写入 `~/.agent/memory/` | `'Memory'` 加入 `DEFAULT_ALLOW_RULES`；种子放 `packages/core/memory/` 作 builtin；空 catalog 仍注册工具；清单行带 scope；`ALWAYS_KEEP` 含 `memory` | 详见 PHASE-MEMORY.md 文首偏差表 |
+> | 2026-09-12 | Phase 12 上下文工程一次做完 ①–⑦ | 本轮落地 ①②③④⑤⑦，**⑥ 子智能体隔离整段不做**；④ 不做 taxonomy #13 ablation runner（与 ⑥ 同先决）；① 的 `allowed_tools` 仅 openai 能力位，执行闸对所有端点生效；② 不迁移 `sessions/<id>.jsonl`，旁路 `sessions/<id>/toolout-n.txt` | 详见 PHASE-CONTEXT.md |
+> | 2026-09-13 | Phase 12 ⑥ 收尾：发现隔离机制早在 Phase 7 就已落地（`task`+内置只读 `explore`，实测见本表 2026-09-08 行），⑥ 的真正缺口是它自订的先决——taxonomy #13 ablation runner | 泛化 `evals/src/cli.ts` `--ablation` 收 `compaction`\|`subagents`\|`prompt-tools`，两臂 live 跑（换维度即换 request 指纹，cassette 无法回放），复用 `renderComparison`（加可选 arm 标签）写 `ablation-<dim>.json`；补父侧隔离端到端测试 `subagents/isolation.test.ts`；live 各跑一次（两维均 5/5 pass@k，native 比 prompt-encoded 省 ~9% token，task 工具在单文件任务上 +6% token）。#13 关闭、#10 的「needs #13」解锁；大仓库探索型 fixture 留 follow-up。**未改主 agent 默认行为，无回归** | 详见 PHASE-CONTEXT.md ⑥ + harness-taxonomy.md #13 |
 
 ---
 
@@ -241,14 +244,14 @@ pnpm workspace + tsup + vitest + tsconfig references；`hc --version` 跑通。C
 ### Phase 8 — 可观测与评测（2.5 天）
 
 > **Telemetry ✅ 已完成（2026-09-08）**，Eval ⬜ 待做。落地见上方偏差记录表 2026-09-08 两行，
-> 细节见 [telemetry.md](./telemetry.md)。
+> 细节见 telemetry.md。
 
 **Telemetry** (`telemetry/`)：✅
 - 每个 session 一份结构化 JSONL trace（`.agent/traces/<id>.jsonl`）：每次模型调用的 token（含缓存命中）/ 成本 / 延迟 / ttft、每次工具调用的入参摘要 + 耗时 + 输出字节数、压缩、子 Agent 派发、provider 错误、每个 run 的收尾。
 - `hc trace [id]` 渲染时间线（缺省取最新，`--json` 出原始事件）；`hc stats` 汇总跨 session 的 token / 成本 / 平均 turn 数 / 缓存命中率 / by-model（`--since` / `--json`）。
 - OpenTelemetry exporter 作为 stretch —— 未做。
 
-**Eval** (`evals/`)：✅ 已完成（2026-09-08，见上方偏差表三行 + [eval.md](./eval.md)）
+**Eval** (`evals/`)：✅ 已完成（2026-09-08，见上方偏差表三行 + eval.md）
 - 任务集：**5 个**（修 bug / 加特性 / 重构 / 写测试 / 拒绝越权），每个 = fixture 目录（无依赖 `node:test` 项目）+ `task.json` + `assert.mjs` + 录制好的 `cassette.jsonl`。多文件 / 需 MCP / plan mode 留 follow-up。
 - Runner (`evals/src/`)：每任务跑 N 次，报告 **pass@1 / pass@k、平均 token、平均成本、平均 turn 数、拒绝正确率**；`baseline.json` 回归门（`pass@k` 掉或 token/成本涨 >15% → `pnpm eval` exit 1）。CI 加一步 `pnpm eval`（回放，无凭据）。
 - **消融实验**：`--ablation compaction` 出 compaction 开/关对比表（真实模型，进 README）；子 Agent / native-vs-prompt 只留框架开关（`HarnessOptions`），follow-up。
@@ -280,6 +283,21 @@ flags：`--model / --mode / --allow / --max-turns / --max-cost / --no-mcp`。
 
 ### Phase 10 — 文档与包装（1 天）
 `docs/architecture.md`（含数据流图）、README（架构图 + GIF + eval 基准表 + "harness 四大块各自解决什么问题"）、CONTRIBUTING、`npm publish` 可选。README 的叙事按"问题 → 工程解法 → 量化结果"组织，而不是功能罗列。
+
+---
+
+### Phase 11 — 持久记忆（跨会话 / 全局 + 项目 / 按任务类型）✅ 已完成
+
+> 详见 PHASE-MEMORY.md。目标：补上 Claude Code / Codex 这类一流
+> agent 都有、`hc` 目前没有的能力——**跨会话持续积累的记忆**，区别于 Phase 4 的
+> 会话内压缩（`compactor.ts`）和 Phase 0 就有的静态项目说明（`AGENTS.md`/`CLAUDE.md`）。
+>
+> 核心设计：`~/.agent/memory/`（全局：用户画像、通用协作反馈、按任务类型的协作方式）+
+> `<projectRoot>/.agent/memory/`（项目级：项目决策/效果、项目内协作反馈、外部系统指针），
+> 与 `.agent/sessions/`/`.agent/traces/` 同生命周期（本地私有、gitignore）。渐进式披露
+> 复用 Skills 已验证的两层机制（`<available_memory>` 清单 + `memory` 工具按需读取），
+> 写入通过会话内缓冲区、在 `AgentSession.close()` 统一落盘以保住 prompt-cache 前缀稳定性。
+> 不做语义检索、不做自动去重合并、不做跨机器同步——理由和取舍见该文档 §1.2/§1.3/风险节。
 
 ---
 
