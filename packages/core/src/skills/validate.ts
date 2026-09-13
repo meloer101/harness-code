@@ -82,7 +82,8 @@ export function parseSkill({ raw, dirName, dir, source }: ParseInput): Validatio
   if (data.metadata && typeof data.metadata === 'object' && !Array.isArray(data.metadata)) {
     const meta: Record<string, string> = {};
     for (const [k, v] of Object.entries(data.metadata as Record<string, unknown>)) {
-      meta[k] = typeof v === 'string' ? v : String(v);
+      const s = stringifyMeta(v);
+      if (s !== undefined) meta[k] = s;
     }
     skill.metadata = meta;
   }
@@ -98,4 +99,22 @@ export function parseSkill({ raw, dirName, dir, source }: ParseInput): Validatio
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Metadata values are coerced to strings for the flat `Record<string, string>`.
+ * Scalars stringify the obvious way; objects/arrays are JSON-encoded rather than
+ * becoming `[object Object]`; null/undefined are dropped (return undefined).
+ */
+function stringifyMeta(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return undefined;
+    }
+  }
+  return String(v);
 }

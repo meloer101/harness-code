@@ -37,6 +37,12 @@ describe('narrowToolSpecs', () => {
     const out = narrowToolSpecs(withMcp, [{ name: 'x', allowedTools: ['mcp__github'] }]);
     expect(names(out)).toContain('mcp__github__create_issue');
   });
+
+  it('keeps exit_plan_mode when it is registered, so a plan-mode skill can leave plan mode', () => {
+    const withExit = [...all, spec('exit_plan_mode')];
+    const out = narrowToolSpecs(withExit, [{ name: 'x', allowedTools: ['Read'] }]);
+    expect(names(out)).toContain('exit_plan_mode');
+  });
 });
 
 describe('allowedToolNames', () => {

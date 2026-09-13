@@ -5,8 +5,11 @@
  * the execute-time gate shrink to those tools (multiple active skills
  * intersect). The tool *schema* array offered to the model stays byte-stable
  * so a mid-session skill load does not punch the prompt cache. `skill`,
- * `todo`, and `memory` are always kept: the model still needs to load other
- * skills, track its progress, and record standing notes.
+ * `todo`, `memory`, and `exit_plan_mode` are always kept (when registered): the
+ * model still needs to load other skills, track its progress, record standing
+ * notes, and — if a skill is activated in plan mode — leave plan mode. Without
+ * the last one, a plan-mode skill declaring `allowed-tools` could strand the
+ * model with no way out of plan mode.
  *
  * This does not do per-call specifier matching (e.g. `Bash(git:*)` letting
  * only `git …` through `bash`) — the permission engine's own rules remain
@@ -18,7 +21,7 @@ import { ruleMatchesMcp } from '../permissions/match.js';
 import type { ActiveSkill } from '../agent/control.js';
 import type { AnyToolSpec } from '../tools/types.js';
 
-const ALWAYS_KEEP = new Set(['skill', 'todo', 'memory']);
+const ALWAYS_KEEP = new Set(['skill', 'todo', 'memory', 'exit_plan_mode']);
 
 /** Does `toolName` fall under any of the `allowed-tools` rule strings? */
 function toolAllowed(toolName: string, rules: readonly string[]): boolean {

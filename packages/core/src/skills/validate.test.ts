@@ -43,6 +43,28 @@ describe('parseSkill', () => {
     }
   });
 
+  it('JSON-encodes object/array metadata rather than [object Object], and drops null', () => {
+    const raw = [
+      '---',
+      'name: demo',
+      'description: d',
+      'metadata:',
+      '  tags:',
+      '    - a',
+      '    - b',
+      '  nested:',
+      '    k: v',
+      '  empty: null',
+      '---',
+      'B',
+    ].join('\n');
+    const r = parse(raw);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.skill.metadata).toEqual({ tags: '["a","b"]', nested: '{"k":"v"}' });
+    }
+  });
+
   it('rejects a missing name', () => {
     const r = parse(frontmatter({ description: 'd' }));
     expect(r).toMatchObject({ ok: false });

@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 
+import { truncateHeadTail } from '../context/truncate.js';
 import type { JSONSchema } from '../provider/types.js';
 import type { AnyToolSpec } from '../tools/types.js';
 import type { McpConnection, McpTool } from './client.js';
@@ -21,6 +22,14 @@ import type { McpConnection, McpTool } from './client.js';
 export function mcpToolName(server: string, tool: string): string {
   return `mcp__${server}__${tool}`;
 }
+
+/**
+ * Ceiling on the text an MCP tool result contributes to context. An MCP server
+ * is arbitrary code we don't control, so a chatty tool could otherwise dump
+ * unbounded output into the window — the same guard the `bash` tool applies to
+ * command output.
+ */
+const MAX_RESULT_CHARS = 30_000;
 
 const passthrough = z.record(z.string(), z.unknown());
 
@@ -44,7 +53,8 @@ export function adaptMcpTool(connection: McpConnection, tool: McpTool): AnyToolS
         args,
         ctx.signal ? { signal: ctx.signal } : {},
       );
-      return { content: text || '(no output)', ...(isError ? { isError: true } : {}) };
+      const clamped = truncateHeadTail(text, { maxChars: MAX_RESULT_CHARS }).text;
+      return { content: clamped || '(no output)', ...(isError ? { isError: true } : {}) };
     },
   };
 }
