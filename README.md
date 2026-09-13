@@ -4,6 +4,10 @@ A coding agent built from scratch — MCP client and server, skills, plan mode,
 and the harness engineering underneath: context management, a permission
 sandbox, sub-agents, and an eval suite that measures whether any of it works.
 
+![hc fixing a failing test suite end to end — read, edit, run tests, done](docs/demo.gif)
+
+<sub>`hc` fixing a failing test suite end to end, on a cheap model. Regenerate with [`scripts/record-demo.sh`](scripts/record-demo.sh).</sub>
+
 > Status: **feature-complete across the build plan** (Phases 0–12). The provider
 > compatibility layer, agent loop, tool set, permission sandbox, plan mode,
 > context engineering (compaction with never-drop safety invariants, tool-output
@@ -14,8 +18,9 @@ sandbox, sub-agents, and an eval suite that measures whether any of it works.
 > narrowed permissions, parallel dispatch), telemetry (a per-session JSONL trace
 > with `hc trace` / `hc stats`), four frontends (one-shot CLI, REPL, Ink TUI,
 > browser UI), and the eval suite (`pnpm eval` — the whole loop against fixture
-> tasks, replayed from cassettes, gated on a baseline) are built and tested.
-> What's left is packaging polish — a demo GIF and `CONTRIBUTING.md`.
+> tasks, replayed from cassettes, gated on a baseline) are built and tested —
+> the demo above is one such run. The build plan is complete; only an optional
+> `npm publish` remains.
 >
 > How it fits together: [docs/architecture.md](docs/architecture.md). What
 > remains: [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -477,7 +482,7 @@ evals             benchmark tasks and fixtures
 | 7 | Sub-agents and parallelism | done |
 | 8 | Telemetry and eval suite | done |
 | 9 | CLI, TUI, and web UI | done |
-| 10 | Documentation | architecture + README done; demo GIF left |
+| 10 | Documentation | done |
 | 11 | Cross-session memory | done |
 | 12 | In-session context engineering | done |
 
