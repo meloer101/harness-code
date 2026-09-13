@@ -291,14 +291,19 @@ describe('SessionHost', () => {
     host.send('go');
     await settled;
 
-    expect(host.canReplay(2)).toBe(true);
-    const gap = host.since(2);
-    const gapSeqs = gap.map((f) => (f as { seq: number }).seq);
-    expect(Math.min(...gapSeqs)).toBe(3);
-    expect(gapSeqs).toEqual([...gapSeqs].sort((a, b) => a - b));
-    // The gap is exactly the frames after seq 2.
+    // Frames the client actually received (everything the run emitted). Startup
+    // notices emitted during `create` land in the ring before this listener was
+    // added, and their count is platform-dependent — a non-macOS run adds a
+    // `sandbox-warn` — so derive the replay boundary from the first client frame
+    // rather than hardcoding it.
     const allSeqs = frames.filter((f) => f.t === 'evt').map((f) => (f as { seq: number }).seq);
-    expect(gapSeqs).toEqual(allSeqs.filter((s) => s > 2));
+    const since = Math.min(...allSeqs) - 1;
+
+    expect(host.canReplay(since)).toBe(true);
+    const gapSeqs = host.since(since).map((f) => (f as { seq: number }).seq);
+    expect(gapSeqs).toEqual([...gapSeqs].sort((a, b) => a - b));
+    // The gap is exactly the frames after `since`.
+    expect(gapSeqs).toEqual(allSeqs.filter((s) => s > since));
   });
 
   it('cannot replay when the client is ahead of a reset host', async () => {
