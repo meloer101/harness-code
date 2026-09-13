@@ -28,7 +28,10 @@ export class McpHub {
   private toolCache: AnyToolSpec[] | undefined;
   private readonly toolCountByName = new Map<string, number>();
 
-  constructor(configs: readonly McpServerConfig[], opts: { connectTimeoutMs?: number } = {}) {
+  constructor(
+    configs: readonly McpServerConfig[],
+    opts: { connectTimeoutMs?: number; callTimeoutMs?: number } = {},
+  ) {
     this.connections = configs.map((c) => {
       this.transportByName.set(c.name, c.transport);
       return new McpConnection(c, opts);

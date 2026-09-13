@@ -36,10 +36,14 @@ export function adaptMcpTool(connection: McpConnection, tool: McpTool): AnyToolS
     rawInputSchema: normalizeSchema(tool.inputSchema),
     readOnly: false,
     concurrencySafe: false,
-    async execute(input) {
+    async execute(input, ctx) {
       const args =
         input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-      const { text, isError } = await connection.callTool(tool.name, args);
+      const { text, isError } = await connection.callTool(
+        tool.name,
+        args,
+        ctx.signal ? { signal: ctx.signal } : {},
+      );
       return { content: text || '(no output)', ...(isError ? { isError: true } : {}) };
     },
   };

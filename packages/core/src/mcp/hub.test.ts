@@ -6,6 +6,7 @@ import type { McpServerConfig } from './config.js';
 import { McpHub } from './hub.js';
 
 const ECHO_SERVER = fileURLToPath(new URL('./__fixtures__/echo-server.mjs', import.meta.url));
+const HANG_SERVER = fileURLToPath(new URL('./__fixtures__/hang-server.mjs', import.meta.url));
 
 function stdio(name: string, args: string[]): McpServerConfig {
   return { name, transport: 'stdio', command: process.execPath, args, env: {} };
@@ -75,6 +76,37 @@ describe('McpHub', () => {
       const specs = await hub.toolSpecs();
       expect(specs).toEqual([]);
       expect(hub.status()[0]).toMatchObject({ name: 'mute', state: 'failed' });
+    } finally {
+      await hub.closeAll();
+    }
+  });
+
+  it('a hung tool call fails within callTimeoutMs, leaving the server ready', async () => {
+    const hub = new McpHub([stdio('hang', [HANG_SERVER])], { callTimeoutMs: 200 });
+    try {
+      const hang = (await hub.toolSpecs()).find((s) => s.name === 'mcp__hang__hang');
+      expect(hang).toBeDefined();
+
+      const result = await hang!.execute({}, {} as never);
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/failed/i);
+      // one slow tool is not a dead server — the connection stays ready
+      expect(hub.status()[0]).toMatchObject({ name: 'hang', state: 'ready' });
+    } finally {
+      await hub.closeAll();
+    }
+  });
+
+  it('aborting the signal cancels an in-flight tool call', async () => {
+    // A long call timeout, so it is the abort — not the timeout — that ends the call.
+    const hub = new McpHub([stdio('hang', [HANG_SERVER])], { callTimeoutMs: 30_000 });
+    try {
+      const hang = (await hub.toolSpecs()).find((s) => s.name === 'mcp__hang__hang')!;
+      const controller = new AbortController();
+      const pending = hang.execute({}, { signal: controller.signal } as never);
+      controller.abort();
+      const result = await pending;
+      expect(result.isError).toBe(true);
     } finally {
       await hub.closeAll();
     }

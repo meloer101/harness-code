@@ -77,20 +77,33 @@ export interface McpPrompt {
 export type McpConnectionState = 'idle' | 'connecting' | 'ready' | 'failed';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+/**
+ * Ceiling for a single `tools/call`. The MCP SDK applies its own
+ * `DEFAULT_REQUEST_TIMEOUT_MSEC` (60s) when we pass nothing, but that is neither
+ * tunable from `.mcp.json` nor cancellable — so we set our own and thread the
+ * turn's abort signal through, so a slow tool can't hold a turn hostage and an
+ * aborted run cancels the in-flight call.
+ */
+const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 
 export class McpConnection {
   readonly name: string;
   private readonly config: McpServerConfig;
   private readonly connectTimeoutMs: number;
+  private readonly callTimeoutMs: number;
   private client: Client | undefined;
   private connectPromise: Promise<void> | undefined;
   private _state: McpConnectionState = 'idle';
   private _error: string | undefined;
 
-  constructor(config: McpServerConfig, opts: { connectTimeoutMs?: number } = {}) {
+  constructor(
+    config: McpServerConfig,
+    opts: { connectTimeoutMs?: number; callTimeoutMs?: number } = {},
+  ) {
     this.name = config.name;
     this.config = config;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   }
 
   get state(): McpConnectionState {
@@ -198,16 +211,30 @@ export class McpConnection {
   async callTool(
     name: string,
     args: Record<string, unknown>,
+    opts: { signal?: AbortSignal } = {},
   ): Promise<{ text: string; isError: boolean }> {
     const client = await this.ready();
     if (!client) {
       return { text: `MCP server "${this.name}" is unavailable: ${this._error ?? 'not connected'}`, isError: true };
     }
-    const res = (await client.callTool({ name, arguments: args })) as {
-      content?: unknown[];
-      isError?: boolean;
-    };
-    return { text: flattenContent(res.content), isError: res.isError === true };
+    // A failed call is returned as a contained error — the same posture as an
+    // MCP-level `isError` result — and does NOT mark the whole connection
+    // failed: a single slow or throwing tool is not a dead server.
+    try {
+      const res = (await client.callTool({ name, arguments: args }, undefined, {
+        timeout: this.callTimeoutMs,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      })) as {
+        content?: unknown[];
+        isError?: boolean;
+      };
+      return { text: flattenContent(res.content), isError: res.isError === true };
+    } catch (err) {
+      return {
+        text: `MCP tool "${name}" on server "${this.name}" failed: ${err instanceof Error ? err.message : String(err)}`,
+        isError: true,
+      };
+    }
   }
 
   async listResources(): Promise<McpResource[]> {
