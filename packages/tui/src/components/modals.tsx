@@ -81,7 +81,7 @@ export function Overlay({
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
         <Text bold>keys</Text>
-        <Text color={theme.dim}>Esc — abort turn / close · Ctrl+C ×2 — quit · Ctrl+D — quit (empty) · Ctrl+O — expand output</Text>
+        <Text color={theme.dim}>Esc — abort turn / close · Shift+Tab — cycle mode · Ctrl+C ×2 — quit · Ctrl+D — quit (empty) · Ctrl+O — expand output</Text>
         <Text bold>commands</Text>
         <Text color={theme.dim}>
           /help /clear /quit /compact /cost /resume /mode /plan /effort /skills · Tab — complete · MCP prompts via /name

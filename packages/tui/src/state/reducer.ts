@@ -14,7 +14,7 @@ import { emptyLive, foldReducer, initialFoldState } from '@harness-code/protocol
 export type { Entry, LiveSnapshot, PendingAsk, PendingPlan, ToolItem } from '@harness-code/protocol';
 export { emptyLive };
 
-export type OverlayKind = 'help' | 'resume' | 'skills';
+export type OverlayKind = 'help' | 'resume' | 'skills' | 'effort';
 
 export interface TuiState extends FoldState {
   cwd: string;

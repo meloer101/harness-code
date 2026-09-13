@@ -9,7 +9,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Static, Text, useInput, useStdout } from 'ink';
+import { Box, Static, Text, useInput, useStdout } from 'ink';
 
 import type { AgentSession, PermissionMode, ReasoningEffort } from '@harness-code/core';
 import { AGENT_DIR, findProjectRoot, listSessionIds, loadTranscript } from '@harness-code/core';
@@ -17,6 +17,7 @@ import type { EventBuffer } from '@harness-code/protocol';
 import { entriesFromTranscript } from '@harness-code/protocol';
 
 import { HistoryEntry, MeterBar, ModeBar, ToolCard } from './components/display.js';
+import { EffortPicker } from './components/EffortPicker.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { Input, type CommandInfo } from './components/Input.js';
 import { Overlay, PermissionModal, PlanModal } from './components/modals.js';
@@ -31,7 +32,7 @@ const BUILTIN_COMMANDS: CommandInfo[] = [
   { command: '/help', description: 'show keys and commands' },
   { command: '/mode', description: 'switch permission mode (ask / acceptEdits / plan)' },
   { command: '/plan', description: 'enter plan mode' },
-  { command: '/effort', description: 'cycle reasoning effort (low / medium / high)' },
+  { command: '/effort', description: 'adjust reasoning effort (←/→ picker)' },
   { command: '/compact', description: 'summarize history to free up context' },
   { command: '/cost', description: 'show token usage and cost' },
   { command: '/resume', description: 'resume a previous session' },
@@ -40,7 +41,6 @@ const BUILTIN_COMMANDS: CommandInfo[] = [
   { command: '/clear', description: 'clear the transcript' },
   { command: '/quit', description: 'exit Marvis' },
 ];
-const EFFORT_LEVELS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
 /** Shift+Tab-style permission-mode cycle for `/mode` with no argument. */
 const MODE_CYCLE: readonly PermissionMode[] = ['ask', 'acceptEdits', 'plan'];
 const ALL_MODES: readonly PermissionMode[] = ['ask', 'plan', 'acceptEdits', 'readOnly', 'yolo'];
@@ -85,6 +85,7 @@ export function App({
   // session-mutating slash commands like /compact). `busyRef` stays the
   // synchronous guard for re-entrancy and the abort-vs-quit key decision.
   const [working, setWorking] = useState(false);
+  const [effortDraft, setEffortDraft] = useState<ReasoningEffort>('medium');
   const busyRef = useRef(false);
   const lastCtrlCRef = useRef(0);
   const lastAskRef = useRef<unknown>(null);
@@ -168,6 +169,7 @@ export function App({
   );
 
   const skills = useMemo(() => session.listSkills(), [session]);
+  const effortLevels = useMemo(() => session.effortLevels, [session]);
 
   // Force-load a skill: nudge the model to call the `skill` tool by name, so the
   // load goes through the normal path (active-skill state, allowed-tools narrowing).
@@ -274,13 +276,15 @@ export function App({
             });
             return;
           }
-          const arg = text.slice(1).split(/\s+/)[1];
-          const next: ReasoningEffort =
-            arg && EFFORT_LEVELS.includes(arg as ReasoningEffort)
-              ? (arg as ReasoningEffort)
-              : EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(current) + 1) % EFFORT_LEVELS.length]!;
-          session.setEffort(next);
-          d({ type: 'SET_EFFORT', effort: next });
+          const arg = text.slice(1).split(/\s+/)[1] as ReasoningEffort | undefined;
+          if (arg && effortLevels.includes(arg)) {
+            // `/effort high` sets directly; bare `/effort` opens the picker.
+            session.setEffort(arg);
+            d({ type: 'SET_EFFORT', effort: arg });
+            return;
+          }
+          setEffortDraft(current);
+          d({ type: 'OPEN_OVERLAY', overlay: 'effort' });
           return;
         }
         default: {
@@ -291,7 +295,7 @@ export function App({
         }
       }
     },
-    [session, store, d, runTurn, onExit, stdout, state.mode, skills, loadSkill],
+    [session, store, d, runTurn, onExit, stdout, state.mode, skills, loadSkill, effortLevels],
   );
 
   const submit = useCallback(
@@ -371,6 +375,24 @@ export function App({
         const pick = skills[Number(input) - 1];
         if (pick) loadSkill(pick.name);
       }
+      if (state.overlay === 'effort') {
+        const i = effortLevels.indexOf(effortDraft);
+        if (key.leftArrow) setEffortDraft(effortLevels[Math.max(0, i - 1)]!);
+        else if (key.rightArrow)
+          setEffortDraft(effortLevels[Math.min(effortLevels.length - 1, i + 1)]!);
+        else if (key.return) {
+          session.setEffort(effortDraft);
+          d({ type: 'SET_EFFORT', effort: effortDraft });
+          d({ type: 'CLOSE_OVERLAY' });
+        }
+      }
+      return;
+    }
+    if (key.tab && key.shift) {
+      // Shift+Tab cycles the permission mode (Tab alone stays with completion).
+      const next = MODE_CYCLE[(MODE_CYCLE.indexOf(state.mode) + 1) % MODE_CYCLE.length] ?? 'ask';
+      session.setMode(next);
+      d({ type: 'SET_MODE', mode: next });
       return;
     }
     if (key.escape) {
@@ -423,21 +445,28 @@ export function App({
           )}
         </Static>
 
-        {/* Live (in-flight) region */}
+        {/* Live (in-flight) region — mirrors the committed assistant layout. */}
         {(state.live.thinking !== '' || state.live.text !== '' || state.live.tools.length > 0) && (
-          <>
-            {state.live.thinking !== '' && <Text color={theme.faint}>{state.live.thinking}</Text>}
-            {state.live.text !== '' && <Markdown text={state.live.text} theme={theme} />}
-            {state.live.tools.map((t) => (
-              <ToolCard key={t.id} tool={t} expanded={state.expandedOutput} theme={theme} />
-            ))}
-          </>
+          <Box marginTop={1}>
+            <Text color={theme.text}>● </Text>
+            <Box flexDirection="column" flexGrow={1}>
+              {state.live.thinking !== '' && (
+                <Text color={theme.faint}>{state.live.thinking}</Text>
+              )}
+              {state.live.text !== '' && <Markdown text={state.live.text} theme={theme} />}
+              {state.live.tools.map((t) => (
+                <ToolCard key={t.id} tool={t} expanded={state.expandedOutput} theme={theme} />
+              ))}
+            </Box>
+          </Box>
         )}
       </ErrorBoundary>
 
       {state.pendingAsk && <PermissionModal ask={state.pendingAsk} theme={theme} />}
       {state.pendingPlan && <PlanModal plan={state.pendingPlan} theme={theme} />}
-      {state.overlay && (
+      {state.overlay === 'effort' ? (
+        <EffortPicker value={effortDraft} levels={effortLevels} theme={theme} />
+      ) : state.overlay ? (
         <Overlay
           kind={state.overlay}
           theme={theme}
@@ -445,7 +474,7 @@ export function App({
           skills={skills}
           onPick={resume}
         />
-      )}
+      ) : null}
 
       <Input
         onSubmit={submit}

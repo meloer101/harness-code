@@ -106,8 +106,12 @@ export type ToolChoice =
 // Request / response
 // ---------------------------------------------------------------------------
 
-/** Reasoning-effort level for models with a reasoning channel (OpenAI `reasoning_effort`). */
-export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+/**
+ * Reasoning-effort level for models with a reasoning channel. The full union
+ * spans providers (OpenAI: minimal→high; DeepSeek: low/high/max; Claude: up to
+ * max); which subset a given model actually accepts is `capabilities.effortLevels`.
+ */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface ModelRequest {
   /** Bare model id as the endpoint expects it (routing already stripped). */

@@ -8,7 +8,25 @@
  * every other layer branch on facts instead of vibes.
  */
 
+import type { ReasoningEffort } from './types.js';
+
 export type PromptCacheMode = 'none' | 'implicit' | 'explicit';
+
+/**
+ * Universal reasoning-effort ladder shown by default (Faster→Smarter). It stays
+ * rich on purpose: providers accept the whole ladder and map it to their own
+ * native levels server-side (e.g. DeepSeek folds minimal/medium/xhigh/ultra into
+ * low/high/max — api-docs.deepseek.com/guides/thinking_mode). A model overrides
+ * `effortLevels` only when its endpoint rejects, rather than maps, unknown values.
+ */
+export const DEFAULT_REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
 
 export interface Pricing {
   inputPerMTok: number;
@@ -29,6 +47,14 @@ export interface ModelCapabilities {
   promptCache: PromptCacheMode;
   /** Model emits a separate reasoning channel we should surface as `thinking`. */
   reasoning: boolean;
+  /**
+   * Reasoning-effort levels this model actually accepts, in Faster→Smarter order
+   * (drives the TUI picker and the value sent as `reasoning_effort`). Only
+   * meaningful when `reasoning` is true; falls back to `DEFAULT_REASONING_EFFORTS`.
+   */
+  effortLevels?: readonly ReasoningEffort[];
+  /** Default reasoning effort when none is configured. */
+  defaultEffort?: ReasoningEffort;
   contextWindow: number;
   maxOutputTokens: number;
   /** Endpoint rejects `temperature` (some reasoning models do). */
@@ -87,6 +113,9 @@ const RULES: CapabilityRule[] = [
     match: /^deepseek-v4-pro/i,
     caps: {
       reasoning: true,
+      // Accepts the full ladder and maps it to its native low/high/max
+      // server-side, so no `effortLevels` override — just a default of high.
+      defaultEffort: 'high',
       contextWindow: 1_000_000,
       maxOutputTokens: 384_000,
       promptCache: 'implicit',
@@ -98,6 +127,7 @@ const RULES: CapabilityRule[] = [
     match: /^deepseek-v4-flash/i,
     caps: {
       reasoning: true,
+      defaultEffort: 'high',
       contextWindow: 1_000_000,
       maxOutputTokens: 384_000,
       promptCache: 'implicit',

@@ -79,6 +79,7 @@ import { addUsage } from '../provider/types.js';
 import type { Message, Usage } from '../provider/types.js';
 import { ProviderRegistry } from '../provider/router.js';
 import type { ResolvedModel } from '../provider/router.js';
+import { DEFAULT_REASONING_EFFORTS } from '../provider/capabilities.js';
 import type { ReasoningEffort } from '../provider/types.js';
 import type { ContextBreakdown } from '../context/budget.js';
 
@@ -254,10 +255,13 @@ export class AgentSession {
     this.#cwd = config.cwd;
     this.#platform = config.platform ?? process.platform;
     this.#model = config.model;
-    // Default reasoning-capable models to `medium` so there's always a level to
-    // show and send; non-reasoning models carry none.
+    // Reasoning-capable models start at their declared default effort (falling
+    // back to `high`); non-reasoning models carry none.
     this.#effort =
-      config.reasoningEffort ?? (config.model.capabilities.reasoning ? 'medium' : undefined);
+      config.reasoningEffort ??
+      (config.model.capabilities.reasoning
+        ? (config.model.capabilities.defaultEffort ?? 'high')
+        : undefined);
     this.#registry = init.registry;
     this.#engine = init.engine;
     this.#planApprovedMode = init.planApprovedMode;
@@ -567,6 +571,12 @@ export class AgentSession {
   /** Current reasoning-effort level, or `undefined` when the model has no reasoning channel. */
   get effort(): ReasoningEffort | undefined {
     return this.#model.capabilities.reasoning ? this.#effort : undefined;
+  }
+
+  /** Effort levels this model accepts (Faster→Smarter); empty for non-reasoning models. */
+  get effortLevels(): readonly ReasoningEffort[] {
+    const caps = this.#model.capabilities;
+    return caps.reasoning ? (caps.effortLevels ?? DEFAULT_REASONING_EFFORTS) : [];
   }
 
   get activeSkills(): readonly ActiveSkill[] {

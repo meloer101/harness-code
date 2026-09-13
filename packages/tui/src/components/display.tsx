@@ -147,23 +147,26 @@ export function HistoryEntry({
   switch (entry.kind) {
     case 'user':
       return (
-        <Text color={theme.accent}>
-          ❯ {entry.text}
-        </Text>
+        <Box marginTop={1}>
+          <Text color={theme.accent}>❯ {entry.text}</Text>
+        </Box>
       );
     case 'assistant':
       return (
-        <Box flexDirection="column">
-          {entry.thinking !== '' &&
-            (expanded ? (
-              <Text color={theme.faint}>{entry.thinking}</Text>
-            ) : (
-              <Text color={theme.faint}>· thinking</Text>
+        <Box marginTop={1}>
+          <Text color={theme.text}>● </Text>
+          <Box flexDirection="column" flexGrow={1}>
+            {entry.thinking !== '' &&
+              (expanded ? (
+                <Text color={theme.faint}>{entry.thinking}</Text>
+              ) : (
+                <Text color={theme.faint}>· thinking</Text>
+              ))}
+            {entry.text !== '' && <Markdown text={entry.text} theme={theme} />}
+            {entry.tools.map((t) => (
+              <ToolCard key={t.id} tool={t} expanded={expanded} theme={theme} />
             ))}
-          {entry.text !== '' && <Markdown text={entry.text} theme={theme} />}
-          {entry.tools.map((t) => (
-            <ToolCard key={t.id} tool={t} expanded={expanded} theme={theme} />
-          ))}
+          </Box>
         </Box>
       );
     case 'notice':
