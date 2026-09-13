@@ -71,7 +71,8 @@ killing the session, and a second Ctrl+C at an idle prompt (or `exit`/
 Ctrl+D) ends it cleanly. This isn't the Ink TUI from the roadmap below —
 no panels, no slash commands — just plain text in, streamed text out,
 which is what actually makes it usable to talk to instead of re-typing a
-whole command line per message.
+whole command line per message. For the Ink TUI, a CJK-safe terminal/font setup
+keeps its box-drawing aligned — see [docs/terminal-setup.md](docs/terminal-setup.md).
 
 ## The web UI
 

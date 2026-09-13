@@ -30,15 +30,17 @@ robustness items, and a set of clearly-scoped stretch enhancements.
 
 ## 1. Finish line — to call the project "done"
 
-These are the last items from the original 10-phase plan.
+These are the last items from the original 10-phase plan. **Only F2 remains** —
+F1/F3/F4/F5 shipped 2026-09-13 (after re-recording the eval cassettes against
+the Phase 12 prompt).
 
 | # | Item | Effort | Notes |
 |---|---|---|---|
-| F1 | **`docs/architecture.md`** — architecture + dataflow diagram | S–M | Original Phase 10 deliverable; the one narrative doc the README should link to. |
-| F2 | **Demo GIF** in the README | S | `asciinema` + `agg`, driven by a cassette/cheap model, < 30s. Script sketched in the old Phase 9 plan (`scripts/record-demo.sh`, lock the font). |
-| F3 | **README polish** | S | Roadmap table still says "Phase 8 of 10 / web UI done" — update to reflect TUI + memory + context phases shipped. Add the arch diagram (F1) and GIF (F2). |
-| F4 | **`docs/terminal-setup.md`** (short) | S | Recommended terminals + CJK-safe font stack (PingFang SC fallback), so the TUI's box-drawing/gutters don't drift a column. Was scoped in the Phase 9 plan but not yet written. |
-| F5 | **`CONTRIBUTING.md`** + optional `npm publish` | S | Nice packaging finish; publish is optional. |
+| F1 | ~~`docs/architecture.md`~~ | — | **Done.** Narrative doc with a dataflow diagram, the one the README links to. |
+| F2 | **Demo GIF** in the README | S | **Remaining.** `asciinema` + `agg`, driven by a cassette/cheap model, < 30s. `scripts/record-demo.sh` (lock the font). Needs the recording tools installed + a recording pass. |
+| F3 | ~~README polish~~ | — | **Done.** Dropped "Phase 8 of 10"; added Context-engineering + Memory sections; refreshed eval baseline + ablation tables to current numbers; 401→699 tests; roadmap table + architecture link. |
+| F4 | ~~`docs/terminal-setup.md`~~ | — | **Done.** Recommended terminals + CJK-safe font stack. |
+| F5 | ~~`CONTRIBUTING.md`~~ | — | **Done.** (`npm publish` still optional, not done.) |
 
 ---
 
