@@ -32,9 +32,14 @@ import type {
 import { allowedToolNames } from '../skills/narrow.js';
 import { parseGoalAndPriorDigest } from '../context/compactor.js';
 import { maybeVaryObservation } from './observations.js';
+import { z } from 'zod';
+
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolResult } from '../tools/types.js';
+import { toolDefinition } from '../tools/types.js';
+import { coerceArgs } from '../tools/coerce.js';
 import { errorMessage } from '../tools/util.js';
+import { stableStringify } from '../util/json.js';
 import type { ContextBreakdown } from '../context/budget.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks, CompactionResult, PermissionDecision, TurnContext } from './hooks.js';
@@ -833,12 +838,14 @@ export class AgentLoop {
 
     const results = new Map<string, ToolResult>();
 
-    const execute = async ({
-      call,
-      decision,
-    }: Decision): Promise<{ result: ToolResult; durationMs: number }> => {
+    const execute = async (
+      { call, decision }: Decision,
+      memo?: Map<string, Promise<ToolResult>>,
+    ): Promise<{ result: ToolResult; durationMs: number }> => {
       const startedAt = Date.now();
-      const result = await this.executeOne(call, decision, opts.truncated === true);
+      const result = memo
+        ? await this.executeShared(call, decision, opts.truncated === true, memo)
+        : await this.executeOne(call, decision, opts.truncated === true);
       const durationMs = Date.now() - startedAt;
       const feedback = await this.hooks.onAfterToolCall?.(call, result, turnCtx);
       if (feedback?.appendToResult) {
@@ -892,6 +899,11 @@ export class AgentLoop {
     // flushed, so ordering holds without giving up parallel execution.
     const runBatchInOrder = async (batch: Decision[]): Promise<void> => {
       const pending = new Map<number, { result: ToolResult; durationMs: number }>();
+      // Collapse identical read-only calls the model emitted in one turn: run the
+      // underlying tool once and hand every caller its own copy of the result.
+      // Scoped to this batch — a write barrier splits batches, so a read after a
+      // write is never served a result computed before it.
+      const readMemo = new Map<string, Promise<ToolResult>>();
       let nextFlush = 0;
       const drain = async (): Promise<void> => {
         while (pending.has(nextFlush)) {
@@ -909,7 +921,7 @@ export class AgentLoop {
           name: item.call.name,
           input: item.call.input,
         });
-        pending.set(idx, await execute(item));
+        pending.set(idx, await execute(item, readMemo));
         await drain();
       };
       await runWithConcurrency(
@@ -965,6 +977,36 @@ export class AgentLoop {
     return { type: 'allowed_tools', mode: 'auto', names };
   }
 
+  /**
+   * `executeOne`, but identical read-only calls in the same batch share one
+   * execution. Only read-only, concurrency-safe, allowed calls are deduped:
+   * their result is a pure function of their input, so collapsing them is free.
+   * Each caller gets a shallow copy so per-call guardrail feedback appended
+   * downstream never leaks across the shared result.
+   */
+  private async executeShared(
+    call: ToolUseBlock,
+    decision: PermissionDecision,
+    truncated: boolean,
+    memo: Map<string, Promise<ToolResult>>,
+  ): Promise<ToolResult> {
+    const spec = this.opts.tools.get(call.name);
+    const dedupable =
+      decision.decision === 'allow' &&
+      !call.parseError &&
+      spec?.readOnly === true &&
+      spec.concurrencySafe === true;
+    if (!dedupable) return this.executeOne(call, decision, truncated);
+
+    const sig = `${call.name}\0${stableStringify(call.input ?? {})}`;
+    let shared = memo.get(sig);
+    if (!shared) {
+      shared = this.executeOne(call, decision, truncated);
+      memo.set(sig, shared);
+    }
+    return { ...(await shared) };
+  }
+
   private async executeOne(
     call: ToolUseBlock,
     decision: PermissionDecision,
@@ -992,10 +1034,22 @@ export class AgentLoop {
     if (!spec) {
       return { content: `Unknown tool "${call.name}"`, isError: true };
     }
-    const parsed = spec.schema.safeParse(call.input);
+    let parsed = spec.schema.safeParse(call.input);
+    if (!parsed.success) {
+      // Weak models stringify scalars (`"true"`, `"10"`) or pass a nested object
+      // as a JSON string. Coerce guided by the schema and re-validate before
+      // spending a turn on an error. The happy path never reaches here.
+      const coerced = coerceArgs(spec.schema, call.input);
+      if (coerced !== call.input) {
+        const retry = spec.schema.safeParse(coerced);
+        if (retry.success) parsed = retry;
+      }
+    }
     if (!parsed.success) {
       return {
-        content: `Invalid arguments for ${call.name}: ${parsed.error.message}`,
+        content:
+          `Invalid arguments for ${call.name}:\n${z.prettifyError(parsed.error)}\n\n` +
+          `Expected schema:\n${JSON.stringify(toolDefinition(spec).inputSchema)}`,
         isError: true,
       };
     }

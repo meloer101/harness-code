@@ -65,10 +65,21 @@ or a real Harbor run to validate.
   urgent. *(S, Low)*
 
 ### C · Tool system & execution
-- **Tool-loop guardrails (signature-level tracking)** — detect repeated identical
-  tool calls (blind retries / rabbit-holing) and intervene, generalizing the
-  current step-back nudge. Partially addressed by the nudge; the structural version
-  is the borrow from hermes-agent's `tool_guardrails`. *(M, P1)*
+- ~~**Tool-loop guardrails (signature-level tracking)**~~ — **Done.** Signature-level
+  tracking of repeated failing calls, same-tool failures across tweaked args, and
+  unchanging read-only results, with warn→block thresholds. `agent/guardrails.ts`,
+  wired in `session-runner.ts` (main loop + sub-agents), gated by the
+  `toolGuardrails` setting. The hermes-agent borrow, shipped.
+- ~~**Weak-model argument robustness**~~ — **Done.** On a strict `safeParse` failure
+  the loop runs a schema-guided coercion pass (`tools/coerce.ts`) — stringified
+  scalars (`"true"`, `"10"`), a JSON blob handed in place of an object/array,
+  array-element mismatches — then re-validates before spending a turn on an error.
+  If still invalid, the error is a prettified issue list plus the expected JSON
+  Schema, so a cheap model can self-correct in one turn.
+- ~~**Dedup identical read-only calls in a batch**~~ — **Done.** When a model emits
+  the same read-only, concurrency-safe call twice in one turn, the underlying tool
+  runs once and each call gets its own copy of the result (`AgentLoop.executeShared`).
+  Scoped per batch, so a write barrier still forces a re-read.
 - **Broaden the structured-error sink** — `NoModelConfiguredError` now emits
   structured JSON for `--output-format json`, but other pre-sink errors (e.g. an
   unknown provider name from deeper in `buildSessionConfig`) still exit as plain

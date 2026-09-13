@@ -1485,4 +1485,137 @@ describe('AgentLoop', () => {
       expect(err?.content).toBe('nope');
     });
   });
+
+  describe('argument robustness', () => {
+    function typedTool(onRun: (input: unknown) => void): ToolSpec<unknown> {
+      return {
+        name: 'typed',
+        description: 'a tool with a typed schema',
+        schema: z.object({ recursive: z.boolean(), limit: z.number() }),
+        readOnly: true,
+        concurrencySafe: true,
+        async execute(input) {
+          onRun(input);
+          return { content: 'ok' };
+        },
+      };
+    }
+
+    it('coerces stringified scalars from a weak model and runs the tool once', async () => {
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'typed', input: { recursive: 'true', limit: '5' } }] },
+        { text: 'done' },
+      ]);
+      let seen: unknown;
+      const tools = new ToolRegistry([typedTool((input) => (seen = input))]);
+      const loop = new AgentLoop({ model: resolvedModel(provider), tools, cwd: '/tmp' });
+
+      const result = await loop.run([userText('hi')]);
+
+      expect(seen).toEqual({ recursive: true, limit: 5 });
+      expect(result.messages[2]?.content[0]).toMatchObject({
+        type: 'tool_result',
+        content: 'ok',
+      });
+      expect(result.messages[2]?.content[0]).not.toHaveProperty('isError', true);
+    });
+
+    it('returns a prettified error and the expected schema when args are unfixable', async () => {
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'typed', input: { recursive: 'maybe', limit: 'lots' } }] },
+        { text: 'done' },
+      ]);
+      const tools = new ToolRegistry([typedTool(() => {})]);
+      const loop = new AgentLoop({ model: resolvedModel(provider), tools, cwd: '/tmp' });
+
+      const result = await loop.run([userText('hi')]);
+
+      const block = result.messages[2]?.content[0] as { content: string; isError?: boolean };
+      expect(block.isError).toBe(true);
+      expect(block.content).toContain('Invalid arguments for typed');
+      // prettified, human-readable issue list rather than the raw zod dump
+      expect(block.content).toContain('recursive');
+      // the schema is echoed so the model can self-correct
+      expect(block.content).toContain('Expected schema:');
+      expect(block.content).toContain('boolean');
+    });
+  });
+
+  describe('read dedup within a batch', () => {
+    function countingRead(counter: { runs: number }): ToolSpec<unknown> {
+      return {
+        name: 'read',
+        description: 'read-only, concurrency-safe',
+        schema: z.object({ path: z.string() }),
+        readOnly: true,
+        concurrencySafe: true,
+        async execute(input) {
+          counter.runs++;
+          await delay(10);
+          return { content: `read ${(input as { path: string }).path}` };
+        },
+      };
+    }
+
+    it('runs identical read-only calls once but returns a result for each', async () => {
+      const provider = new ScriptedProvider([
+        {
+          toolCalls: [
+            { name: 'read', input: { path: 'a.ts' } },
+            { name: 'read', input: { path: 'a.ts' } },
+            { name: 'read', input: { path: 'b.ts' } },
+          ],
+        },
+        { text: 'done' },
+      ]);
+      const counter = { runs: 0 };
+      const tools = new ToolRegistry([countingRead(counter)]);
+      const loop = new AgentLoop({ model: resolvedModel(provider), tools, cwd: '/tmp' });
+
+      const result = await loop.run([userText('hi')]);
+
+      // two distinct signatures → two executions, not three
+      expect(counter.runs).toBe(2);
+      const blocks = result.messages
+        .flatMap((m) => m.content)
+        .filter((b) => b.type === 'tool_result') as Array<{ content: string }>;
+      expect(blocks).toHaveLength(3);
+      expect(blocks[0]?.content).toBe('read a.ts');
+      expect(blocks[1]?.content).toBe('read a.ts');
+      expect(blocks[2]?.content).toBe('read b.ts');
+    });
+
+    it('does not dedup identical calls to a non-read-only tool', async () => {
+      const counter = { runs: 0 };
+      const write: ToolSpec<unknown> = {
+        name: 'write',
+        description: 'not read-only',
+        schema: z.object({ path: z.string() }),
+        readOnly: false,
+        concurrencySafe: false,
+        async execute() {
+          counter.runs++;
+          return { content: 'wrote' };
+        },
+      };
+      const provider = new ScriptedProvider([
+        {
+          toolCalls: [
+            { name: 'write', input: { path: 'a.ts' } },
+            { name: 'write', input: { path: 'a.ts' } },
+          ],
+        },
+        { text: 'done' },
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([write]),
+        cwd: '/tmp',
+      });
+
+      await loop.run([userText('hi')]);
+
+      expect(counter.runs).toBe(2);
+    });
+  });
 });

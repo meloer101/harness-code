@@ -136,6 +136,7 @@ mostly a catalogue of the ways endpoints differ:
 | No usage reported at all (Ollama, most llama.cpp builds) | Estimated and flagged `estimated: true`, with CJK weighted separately from ASCII |
 | No `tools` parameter at all | [Prompt-encoded tool calling](packages/core/src/provider/prompt-tools.ts) — schemas go into the system prompt and calls are parsed back out of the token stream, without leaking tag markup to the terminal |
 | Arguments truncated by `max_tokens`, wrapped in code fences, or written with Python literals | [Tolerant parsing](packages/core/src/util/json.ts) with each repair recorded, so a salvaged parse is distinguishable from a clean one |
+| A weak model stringifies its scalars (`"true"`, `"10"`) or hands a JSON blob where an object belongs | Schema-guided [coercion](packages/core/src/tools/coerce.ts) on a validation failure, re-validated before the turn is spent; a still-invalid call gets a prettified issue list plus the expected schema to self-correct against |
 
 Adding an endpoint is normally a data change in
 [`router.ts`](packages/core/src/provider/router.ts), plus a capability row if it
@@ -149,7 +150,8 @@ tool calls, run them, feed the results back, repeat — with policy kept out
 of the loop entirely and injected through `AgentHooks`
 (`onBeforeTurn` / `onBeforeToolCall` / `onAfterToolCall`) instead of `if`
 branches. Read-only, concurrency-safe tool calls run in parallel; writes run
-serially; a denied call never executes. The loop stops on `end_turn`,
+serially; identical read-only calls emitted in the same turn execute once and
+each gets its own copy of the result; a denied call never executes. The loop stops on `end_turn`,
 `max_turns`, `max_cost`, or an aborted signal — `Ctrl+C` propagates through
 an `AbortSignal` all the way down to a running `bash` child process.
 
@@ -435,7 +437,7 @@ signal.
 
 ## Testing
 
-699 tests, no network, no credentials, no API spend:
+712 tests, no network, no credentials, no API spend:
 
 ```bash
 pnpm test    # unit + integration
