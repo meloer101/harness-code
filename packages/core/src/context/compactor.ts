@@ -21,6 +21,8 @@ import type { Message, Provider } from '../provider/types.js';
 import { textOf } from '../provider/types.js';
 import { errorMessage } from '../tools/util.js';
 import { flattenRequestText, heuristicTokenCount } from './tokenizer.js';
+import { mkdir, writeFile as writeFileNative } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 
 /** Separates the verbatim original goal from the digest inside the merged head. */
 export const COMPACTION_MARKER = '\n\n---\n[此前对话已压缩 · compacted]\n';
@@ -132,6 +134,29 @@ export interface PruneToolOutputsResult {
   messages: Message[];
   /** Heuristic tokens removed from tool_result bodies (0 ⇒ messages unchanged). */
   reclaimedTokens: number;
+  /** Original bodies that were replaced with placeholders, for optional offload. */
+  pruned: PrunedToolOutput[];
+}
+
+export interface PrunedToolOutput {
+  msgIdx: number;
+  blockIdx: number;
+  toolName: string;
+  content: string;
+}
+
+export function fallbackPrunedPlaceholder(toolName: string, chars: number): string {
+  return (
+    `${PRUNED_TOOL_RESULT_PREFIX} ${toolName}, ${chars} chars] ` +
+    `Cleared to free context. Re-call the tool if you still need the output.`
+  );
+}
+
+export function offloadedPrunedPlaceholder(toolName: string, chars: number, relPath: string): string {
+  return (
+    `${PRUNED_TOOL_RESULT_PREFIX} ${toolName}, ${chars} chars → ${relPath}] ` +
+    `Use the read tool to retrieve the original output.`
+  );
 }
 
 /**
@@ -197,9 +222,10 @@ export function pruneToolOutputs(
   }
 
   if (reclaimable < minReclaim || toPrune.size === 0) {
-    return { messages: messages as Message[], reclaimedTokens: 0 };
+    return { messages: messages as Message[], reclaimedTokens: 0, pruned: [] };
   }
 
+  const pruned: PrunedToolOutput[] = [];
   const out: Message[] = messages.map((msg, mi) => {
     if (msg.role !== 'user') return msg;
     let changed = false;
@@ -208,18 +234,74 @@ export function pruneToolOutputs(
       if (!toPrune.has(`${mi}:${bi}`)) return b;
       changed = true;
       const toolName = toolNameById.get(b.toolUseId) ?? 'unknown';
-      const chars = b.content.length;
+      pruned.push({ msgIdx: mi, blockIdx: bi, toolName, content: b.content });
       return {
         ...b,
-        content:
-          `${PRUNED_TOOL_RESULT_PREFIX} ${toolName}, ${chars} chars] ` +
-          `Cleared to free context. Re-call the tool if you still need the output.`,
+        content: fallbackPrunedPlaceholder(toolName, b.content.length),
       };
     });
     return changed ? { ...msg, content } : msg;
   });
 
-  return { messages: out, reclaimedTokens: reclaimable };
+  return { messages: out, reclaimedTokens: reclaimable, pruned };
+}
+
+export interface ToolOutputOffloadOptions {
+  /** Absolute directory to write `toolout-<n>.txt` files into. */
+  dir: string;
+  /** Workspace root; placeholder paths are relative to this so `read` can open them. */
+  cwd: string;
+  writeFile?: (path: string, data: string) => Promise<void>;
+}
+
+/**
+ * Persist pruned tool bodies to `dir` and rewrite placeholders to point at the
+ * files. A write failure on one body falls back to the re-call placeholder for
+ * that body only — never aborts the compaction.
+ */
+export async function applyToolOutputOffload(
+  result: PruneToolOutputsResult,
+  opts: ToolOutputOffloadOptions,
+): Promise<PruneToolOutputsResult> {
+  if (result.pruned.length === 0) return result;
+
+  const write = opts.writeFile ?? writeFileNative;
+  const replacements = new Map<string, string>();
+  let n = 0;
+  try {
+    await mkdir(opts.dir, { recursive: true });
+  } catch {
+    return result;
+  }
+
+  for (const hit of result.pruned) {
+    const filename = `toolout-${n++}.txt`;
+    const abs = join(opts.dir, filename);
+    const key = `${hit.msgIdx}:${hit.blockIdx}`;
+    try {
+      await write(abs, hit.content);
+      const rel = relative(opts.cwd, abs).split(sep).join('/');
+      replacements.set(key, offloadedPrunedPlaceholder(hit.toolName, hit.content.length, rel));
+    } catch {
+      // keep the fallback placeholder already in `result.messages`
+    }
+  }
+
+  if (replacements.size === 0) return result;
+
+  const messages = result.messages.map((msg, mi) => {
+    if (msg.role !== 'user') return msg;
+    let changed = false;
+    const content = msg.content.map((b, bi) => {
+      const next = replacements.get(`${mi}:${bi}`);
+      if (!next || b.type !== 'tool_result') return b;
+      changed = true;
+      return { ...b, content: next };
+    });
+    return changed ? { ...msg, content } : msg;
+  });
+
+  return { ...result, messages };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +311,7 @@ export function pruneToolOutputs(
 function digestSystemPrompt(conventions: string, budget: number): string {
   return `你在压缩一个 coding agent 的会话历史。把给定的历史片段浓缩成一份结构化 digest，让 agent 读完能无缝继续工作。
 
-严格输出下面两个小节的 markdown，不要有额外前言或结语：
+严格输出下面三个小节的 markdown，不要有额外前言或结语：
 
 ## 任务状态
 - 原始目标：<一字不差保留用户的原始目标>
@@ -249,6 +331,11 @@ ${conventions}
 - 工具调用：<相对基线的偏差>
 - 输出风格：<相对基线的偏差>
 
+## 安全与权限不变量（永不丢弃）
+- 用户明确禁止的操作、路径、范围：逐条保留原文
+- 本会话已授予或拒绝的敏感操作边界
+即使历史被压缩，这些约束必须出现在 digest 中。没有则写"无"。
+
 保留因果链、已经建立/修改的环境状态、前置条件、以及影响后续决策的线索。具体，不要泛泛而谈。整份 digest 控制在约 ${budget} token 以内。`;
 }
 
@@ -259,6 +346,41 @@ function digestUserPrompt(goal: string, priorDigest: string | undefined, middleT
   }
   parts.push(`需要压缩的历史片段：\n${middleText}`);
   return parts.join('\n\n---\n\n');
+}
+
+const PROHIBITION_RE = /(?:don't|do not|never|不要|禁止|别碰)[^\n]{0,80}/gi;
+const MAX_INVARIANTS = 12;
+
+/** Pull never-drop safety constraints out of history (user bans + Denied: results). */
+export function extractCompactionInvariants(messages: readonly Message[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string): void => {
+    const t = raw.trim();
+    if (t === '') return;
+    const key = t.toLowerCase();
+    if (seen.has(key) || out.length >= MAX_INVARIANTS) return;
+    seen.add(key);
+    out.push(t);
+  };
+  for (const m of messages) {
+    if (m.role !== 'user') continue;
+    for (const b of m.content) {
+      if (b.type === 'text') {
+        for (const match of b.text.matchAll(PROHIBITION_RE)) add(match[0]!);
+      } else if (b.type === 'tool_result' && b.content.startsWith('Denied:')) {
+        add((b.content.split('\n')[0] ?? b.content).slice(0, 200));
+      }
+    }
+  }
+  return out;
+}
+
+/** Prepend any invariants the summarizer dropped. No-op when the digest already has them. */
+export function ensureInvariants(digest: string, invariants: readonly string[]): string {
+  const missing = invariants.filter((inv) => !digest.includes(inv));
+  if (missing.length === 0) return digest;
+  return `## 安全与权限不变量\n${missing.map((i) => `- ${i}`).join('\n')}\n\n${digest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +405,14 @@ export interface CompactorOptions {
   pruneProtectTokens?: number;
   pruneMinReclaimTokens?: number;
   prunedToolsExempt?: readonly string[];
+  /**
+   * Directory for pruned tool-output files (`toolout-<n>.txt`). When set with
+   * `cwd`, prune placeholders point at a path the `read` tool can reopen.
+   * Write failures fall back to the re-call placeholder and never abort.
+   */
+  offloadDir?: string;
+  cwd?: string;
+  writeFile?: (path: string, data: string) => Promise<void>;
   /** Called with a one-line reason whenever compaction is skipped (empty middle, failed call). */
   onSkip?(reason: string): void;
 }
@@ -304,7 +434,7 @@ export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks[
     let working: readonly Message[] = messages;
     let prunedReclaimed = 0;
     if (pruneBefore) {
-      const pruned = pruneToolOutputs(messages, {
+      let pruned = pruneToolOutputs(messages, {
         ...(opts.pruneProtectTokens !== undefined
           ? { protectTokens: opts.pruneProtectTokens }
           : {}),
@@ -315,6 +445,13 @@ export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks[
           ? { protectedTools: opts.prunedToolsExempt }
           : {}),
       });
+      if (pruned.reclaimedTokens > 0 && opts.offloadDir && opts.cwd) {
+        pruned = await applyToolOutputOffload(pruned, {
+          dir: opts.offloadDir,
+          cwd: opts.cwd,
+          ...(opts.writeFile ? { writeFile: opts.writeFile } : {}),
+        });
+      }
       if (pruned.reclaimedTokens > 0) {
         working = pruned.messages;
         prunedReclaimed = pruned.reclaimedTokens;
@@ -351,7 +488,10 @@ export function createCompactor(opts: CompactorOptions): NonNullable<AgentHooks[
         maxOutputTokens: Math.ceil(budget * 1.5),
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
-      const digest = textOf(res.content).trim();
+      const digest = ensureInvariants(
+        textOf(res.content).trim(),
+        extractCompactionInvariants(working),
+      );
       if (digest === '') {
         if (prunedReclaimed > 0) return { messages: [...working] };
         opts.onSkip?.('compaction skipped: summarizer returned nothing');

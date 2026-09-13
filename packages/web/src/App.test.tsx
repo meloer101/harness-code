@@ -50,6 +50,7 @@ describe('App', () => {
           pendingAsk: null,
           pendingPlan: null,
           running: false,
+          hydrating: false,
           askId: null,
           planId: null,
         },

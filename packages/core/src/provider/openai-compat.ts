@@ -676,6 +676,13 @@ function toOpenAITool(tool: ToolDefinition): unknown {
 
 function toOpenAIToolChoice(choice: NonNullable<ModelRequest['toolChoice']>): unknown {
   if (typeof choice === 'string') return choice;
+  if ('names' in choice) {
+    return {
+      type: 'allowed_tools',
+      mode: choice.mode,
+      tools: choice.names.map((name) => ({ type: 'function', function: { name } })),
+    };
+  }
   return { type: 'function', function: { name: choice.name } };
 }
 

@@ -48,6 +48,7 @@ async function boot(turns: readonly ScriptedTurn[] = [{ text: 'hi from the serve
         skills: false,
         subagents: false,
         mcp: false,
+        memory: false,
         recorder: false,
         trace: false,
         projectMemory: null,

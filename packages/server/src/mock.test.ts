@@ -40,6 +40,7 @@ describe('mock mode', () => {
       cwd,
       agentDir: join(cwd, '.agent'),
       buildConfig: mockConfigFactory(cwd),
+      previewDefaults: async () => ({ modelRef: 'mock/mock', mode: 'ask' }),
     });
     const snapshot = await registry.create({});
     const host = registry.get(snapshot.id);

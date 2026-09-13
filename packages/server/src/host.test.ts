@@ -59,10 +59,12 @@ async function makeHost(
         skills: false,
         subagents: false,
         mcp: false,
+        memory: false,
         recorder: false,
         trace: false,
         projectMemory: null,
       }),
+    previewDefaults: async () => ({ modelRef: 'scripted/test-model', mode: opts.mode ?? 'yolo' }),
   });
   const snapshot = await registry.create({});
   const host = registry.get(snapshot.id);

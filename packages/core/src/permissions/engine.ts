@@ -80,6 +80,10 @@ export class PermissionEngine {
       return this.evaluateSkill();
     }
 
+    if (tool === 'memory') {
+      return this.evaluateMemory();
+    }
+
     if (tool === 'task') {
       return this.evaluateWholeTool('task', false);
     }
@@ -112,11 +116,10 @@ export class PermissionEngine {
   }
 
   /**
-   * A tool with no path / command specifier: `todo`, `skill`, `task`. Whole-tool
-   * `deny`/`allow`/`ask` rules apply, then the mode default. `skill` and `todo`
-   * pass `readOnly: true` (no workspace effect, so `plan`/`readOnly` allow them);
-   * `task` passes `false` (a custom sub-agent could write, so it is gated like a
-   * write tool — asked by default, denied in `plan`/`readOnly`).
+   * A tool with no path / command specifier: `todo`, `skill`, `memory`, `task`.
+   * Whole-tool `deny`/`allow`/`ask` rules apply, then the mode default. `skill`,
+   * `todo`, and `memory` pass `readOnly: true` (no workspace effect, so
+   * `plan`/`readOnly` allow them); `task` passes `false`.
    */
   private evaluateWholeTool(tool: string, readOnly: boolean): PermissionVerdict {
     const denied = this.deny.find((r) => r.tool === tool);
@@ -134,6 +137,10 @@ export class PermissionEngine {
 
   private evaluateTodo(): PermissionVerdict {
     return this.evaluateWholeTool('todo', true);
+  }
+
+  private evaluateMemory(): PermissionVerdict {
+    return this.evaluateWholeTool('memory', true);
   }
 
   private async evaluateBash(input: unknown): Promise<PermissionVerdict> {

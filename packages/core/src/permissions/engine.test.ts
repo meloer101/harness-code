@@ -282,6 +282,30 @@ describe('PermissionEngine', () => {
     });
   });
 
+  describe('memory tool', () => {
+    const call = {
+      toolName: 'memory',
+      input: { action: 'list', scope: 'project' },
+      readOnly: true,
+    };
+
+    it('is allowed by default in plan, acceptEdits, readOnly, and yolo', async () => {
+      for (const mode of ['plan', 'acceptEdits', 'readOnly', 'yolo'] as const) {
+        expect((await engine({ mode }).evaluate(call)).decision).toBe('allow');
+      }
+    });
+
+    it('is allowed in ask mode via the default Memory allow rule', async () => {
+      const v = await engine({ mode: 'ask', allow: ['Memory'] }).evaluate(call);
+      expect(v.decision).toBe('allow');
+    });
+
+    it('honours an explicit deny rule', async () => {
+      const v = await engine({ mode: 'ask', deny: ['Memory'] }).evaluate(call);
+      expect(v.decision).toBe('deny');
+    });
+  });
+
   describe('task tool', () => {
     const call = { toolName: 'task', input: { subagent_type: 'explore', prompt: 'x' }, readOnly: false };
 

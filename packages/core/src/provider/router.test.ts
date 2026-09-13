@@ -141,6 +141,11 @@ describe('resolveCapabilities', () => {
     expect(caps.nativeTools).toBe(true);
     expect(caps.contextWindow).toBeGreaterThan(0);
   });
+
+  it('enables allowed_tools tool_choice only on OpenAI, not DeepSeek', () => {
+    expect(resolveCapabilities('openai', 'gpt-4o').allowedToolsChoice).toBe(true);
+    expect(resolveCapabilities('deepseek', 'deepseek-v4-flash').allowedToolsChoice).toBeFalsy();
+  });
 });
 
 describe('estimateCostUSD', () => {

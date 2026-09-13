@@ -16,6 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { resolveBudgets } from '../config/budgets.js';
@@ -41,12 +42,15 @@ import type {
 import { builtinTools, exitPlanModeTool } from '../tools/index.js';
 import { ToolRegistry } from '../tools/registry.js';
 import type { AnyToolSpec } from '../tools/types.js';
+import { SkillCatalog, createSkillTool, discoverSkills } from '../skills/index.js';
 import {
-  SkillCatalog,
-  createSkillTool,
-  discoverSkills,
-  narrowToolSpecs,
-} from '../skills/index.js';
+  MemoryCatalog,
+  MemoryWriteBuffer,
+  builtinMemoryDir,
+  createMemoryTool,
+  discoverMemory,
+  emptyMemoryManifest,
+} from '../memory/index.js';
 import {
   createTaskTool,
   discoverAgents,
@@ -68,6 +72,7 @@ import {
   SessionState,
   loadSession,
   rebuildSessionState,
+  sessionArtifactsDir,
 } from './session.js';
 import { TraceRecorder } from '../telemetry/trace.js';
 import { addUsage } from '../provider/types.js';
@@ -91,6 +96,7 @@ export type NoticeKind =
   | 'permission-mode'
   | 'mode-changed'
   | 'skill-loaded'
+  | 'memory'
   | 'sandbox-warn'
   | 'compaction'
   | 'context-warn'
@@ -148,6 +154,12 @@ export interface AgentSessionConfig {
   compact?: boolean;
   recorder?: boolean;
   trace?: boolean;
+  /** Persistent cross-session memory (`memory` tool + `<available_memory>`). */
+  memory?: boolean;
+  /** Override `os.homedir()` for `~/.agent/memory` (tests). */
+  homeDir?: string;
+  /** Override packaged builtin memory dir (tests). */
+  builtinMemoryDir?: string;
 
   /** Continue a previous session (id, messages, read ledger). */
   resumeId?: string;
@@ -178,6 +190,8 @@ interface SessionInit {
   mcpToolSpecs: AnyToolSpec[];
   mcpPrompts: Map<string, { server: string; name: string }>;
   skillCatalog: SkillCatalog;
+  memoryCatalog: MemoryCatalog;
+  memoryBuffer: MemoryWriteBuffer;
   engine: PermissionEngine;
   planApprovedMode: PermissionMode;
   recorder: SessionRecorder | undefined;
@@ -210,6 +224,8 @@ export class AgentSession {
   readonly #mcpToolSpecs: AnyToolSpec[];
   readonly #mcpPrompts: Map<string, { server: string; name: string }>;
   readonly #skillCatalog: SkillCatalog;
+  readonly #memoryCatalog: MemoryCatalog;
+  readonly #memoryBuffer: MemoryWriteBuffer;
   readonly #recorder: SessionRecorder | undefined;
   readonly #trace: TraceRecorder | undefined;
   readonly #hooks: AgentHooks;
@@ -242,6 +258,8 @@ export class AgentSession {
     this.#mcpToolSpecs = init.mcpToolSpecs;
     this.#mcpPrompts = init.mcpPrompts;
     this.#skillCatalog = init.skillCatalog;
+    this.#memoryCatalog = init.memoryCatalog;
+    this.#memoryBuffer = init.memoryBuffer;
     this.#recorder = init.recorder;
     this.#trace = init.trace;
     this.#session = init.session;
@@ -332,6 +350,37 @@ export class AgentSession {
       });
     }
 
+    const projectRoot = await findProjectRoot(cwd);
+    const memoryEnabled = config.memory !== false;
+    const discoveredMemory =
+      memoryEnabled
+        ? await discoverMemory(cwd, {
+            ...(config.homeDir ? { homeDir: config.homeDir } : {}),
+            ...(config.builtinMemoryDir ? { builtinDir: config.builtinMemoryDir } : {}),
+            onSkip: (reason) =>
+              notify({ kind: 'memory', level: 'info', text: `skipped ${reason}` }),
+          })
+        : { entries: [], counts: { project: 0, global: 0, builtin: 0 } };
+    const memoryCatalog = new MemoryCatalog(discoveredMemory.entries);
+    if (memoryEnabled && memoryCatalog.size > 0) {
+      const mc = discoveredMemory.counts;
+      notify({
+        kind: 'memory',
+        level: 'info',
+        text:
+          `memory: ${memoryCatalog.size} discovered ` +
+          `(project ${mc.project}, global ${mc.global}, builtin ${mc.builtin})` +
+          (memoryCatalog.dropped.length > 0
+            ? ` — ${memoryCatalog.dropped.length} not advertised (manifest budget)`
+            : ''),
+      });
+    }
+    const memoryBuffer = new MemoryWriteBuffer({
+      global: join(config.homeDir ?? homedir(), AGENT_DIR, 'memory'),
+      project: join(projectRoot, AGENT_DIR, 'memory'),
+      ...(memoryEnabled ? { builtin: config.builtinMemoryDir ?? builtinMemoryDir() } : {}),
+    });
+
     const { agents } =
       config.subagents === false
         ? { agents: [] }
@@ -376,7 +425,7 @@ export class AgentSession {
       }
     }
 
-    const agentDir = config.agentDir ?? join(await findProjectRoot(cwd), AGENT_DIR);
+    const agentDir = config.agentDir ?? join(projectRoot, AGENT_DIR);
     const recorder =
       config.recorder === false ? undefined : new SessionRecorder(agentDir, config.resumeId);
     const traceOn = config.trace !== false && settings.telemetry?.enabled !== false;
@@ -423,6 +472,9 @@ export class AgentSession {
               conventions: AGENT_CONVENTIONS,
               ...(config.budgets.compactKeepTurns !== undefined
                 ? { keepTurns: config.budgets.compactKeepTurns }
+                : {}),
+              ...(recorder
+                ? { offloadDir: sessionArtifactsDir(agentDir, recorder.id), cwd }
                 : {}),
               onSkip: (reason) =>
                 notify({ kind: 'compaction', level: 'info', text: reason }),
@@ -474,6 +526,8 @@ export class AgentSession {
       mcpToolSpecs,
       mcpPrompts,
       skillCatalog,
+      memoryCatalog,
+      memoryBuffer,
       engine,
       planApprovedMode,
       recorder,
@@ -662,11 +716,24 @@ export class AgentSession {
     return body ?? null;
   }
 
-  /** Idempotent teardown: close MCP connections and drop in-flight state. */
+  /** Idempotent teardown: flush staged memories, close MCP connections. */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    await this.#hub.closeAll();
+    try {
+      if (this.#config.memory !== false) {
+        const { written, forgotten } = await this.#memoryBuffer.flush();
+        if (written.length > 0 || forgotten.length > 0) {
+          this.#config.onNotice?.({
+            kind: 'memory',
+            level: 'info',
+            text: `Saved ${written.length} memories, removed ${forgotten.length}.`,
+          });
+        }
+      }
+    } finally {
+      await this.#hub.closeAll();
+    }
   }
 
   // -- internals ------------------------------------------------------------
@@ -677,13 +744,13 @@ export class AgentSession {
       ...builtinTools(),
       ...(activeMode === 'plan' ? [exitPlanModeTool] : []),
       ...(this.#skillCatalog.size > 0 ? [createSkillTool(this.#skillCatalog)] : []),
+      ...(this.#config.memory !== false ? [createMemoryTool(this.#memoryBuffer)] : []),
       ...(this.#taskTool ? [this.#taskTool] : []),
       ...this.#mcpToolSpecs,
     ];
-    const narrowed = narrowToolSpecs(specs, this.#activeSkills);
     return new AgentLoop({
       model: this.#model,
-      tools: new ToolRegistry(narrowed),
+      tools: new ToolRegistry(specs),
       cwd: this.#cwd,
       system: buildAgentSystemPrompt({
         cwd: this.#cwd,
@@ -692,6 +759,9 @@ export class AgentSession {
         ...(this.#memory.text ? { projectMemory: this.#memory.text } : {}),
         ...(this.#skillCatalog.manifest()
           ? { skillsManifest: this.#skillCatalog.manifest() }
+          : {}),
+        ...(this.#config.memory !== false
+          ? { memoryManifest: this.#memoryCatalog.manifest() ?? emptyMemoryManifest() }
           : {}),
       }),
       recorder: this.#recorder,

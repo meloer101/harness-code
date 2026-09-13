@@ -12,6 +12,7 @@ import { AgentLoop } from './loop.js';
 import type { AgentEvent } from './loop.js';
 import { allowAllHooks } from './hooks.js';
 import type { AgentHooks } from './hooks.js';
+import { SessionState } from './session.js';
 
 function resolvedModel(
   provider: ScriptedProvider,
@@ -1178,5 +1179,310 @@ describe('AgentLoop', () => {
       .map((b) => (b as { text: string }).text)
       .join('');
     expect(lastText).toMatch(/Tools are disabled/i);
+  });
+
+  describe('skill allowed-tools masking', () => {
+    const control = {
+      mode: 'yolo' as const,
+      activeSkills: [{ name: 'writing-tests', allowedTools: ['Read', 'Grep'] }],
+      exitPlanMode: () => 'acceptEdits' as const,
+    };
+
+    it('keeps the tools array byte-identical across turns when a skill constrains tools', async () => {
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'read', input: {} }] },
+        { text: 'done' },
+      ]);
+      const tools = new ToolRegistry([
+        trackingTool({ name: 'read', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'write', readOnly: false, concurrencySafe: false }),
+        trackingTool({ name: 'grep', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'skill', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'todo', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'memory', readOnly: true, concurrencySafe: true }),
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools,
+        cwd: '/tmp',
+        control,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      await loop.run([userText('hi')]);
+
+      expect(provider.requests).toHaveLength(2);
+      expect(JSON.stringify(provider.requests[0]?.tools)).toBe(
+        JSON.stringify(provider.requests[1]?.tools),
+      );
+      expect(provider.requests[0]?.tools?.map((t) => t.name).sort()).toEqual([
+        'grep',
+        'memory',
+        'read',
+        'skill',
+        'todo',
+        'write',
+      ]);
+    });
+
+    it('denies a constrained-out tool without executing it', async () => {
+      let writeRan = false;
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'write', input: {} }] },
+        { text: 'done' },
+      ]);
+      const tools = new ToolRegistry([
+        trackingTool({ name: 'read', readOnly: true, concurrencySafe: true }),
+        trackingTool({
+          name: 'write',
+          readOnly: false,
+          concurrencySafe: false,
+          onRun: () => {
+            writeRan = true;
+          },
+        }),
+        trackingTool({ name: 'skill', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'todo', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'memory', readOnly: true, concurrencySafe: true }),
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools,
+        cwd: '/tmp',
+        control,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      const result = await loop.run([userText('hi')]);
+
+      expect(writeRan).toBe(false);
+      const block = result.messages
+        .flatMap((m) => m.content)
+        .find((b) => b.type === 'tool_result');
+      expect(block).toMatchObject({ isError: true });
+      expect((block as { content: string }).content).toMatch(/Denied:.*write/i);
+    });
+
+    it('sends allowed_tools tool_choice only when the capability is on', async () => {
+      const provider = new ScriptedProvider([{ text: 'done' }]);
+      const tools = new ToolRegistry([
+        trackingTool({ name: 'read', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'write', readOnly: false, concurrencySafe: false }),
+        trackingTool({ name: 'skill', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'todo', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'memory', readOnly: true, concurrencySafe: true }),
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider, { allowedToolsChoice: true }),
+        tools,
+        cwd: '/tmp',
+        control,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      await loop.run([userText('hi')]);
+
+      expect(provider.requests[0]?.toolChoice).toEqual({
+        type: 'allowed_tools',
+        mode: 'auto',
+        names: expect.arrayContaining(['read', 'skill', 'todo', 'memory']),
+      });
+      expect((provider.requests[0]?.toolChoice as { names: string[] }).names).not.toContain(
+        'write',
+      );
+    });
+
+    it('does not send tool_choice on the prompt-tools path, but still gates execution', async () => {
+      let writeRan = false;
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'write', input: {} }] },
+        { text: 'done' },
+      ]);
+      const tools = new ToolRegistry([
+        trackingTool({ name: 'read', readOnly: true, concurrencySafe: true }),
+        trackingTool({
+          name: 'write',
+          readOnly: false,
+          concurrencySafe: false,
+          onRun: () => {
+            writeRan = true;
+          },
+        }),
+        trackingTool({ name: 'skill', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'todo', readOnly: true, concurrencySafe: true }),
+        trackingTool({ name: 'memory', readOnly: true, concurrencySafe: true }),
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider, { nativeTools: false }),
+        tools,
+        cwd: '/tmp',
+        control,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      const result = await loop.run([userText('hi')]);
+
+      expect(provider.requests[0]?.toolChoice).toBeUndefined();
+      expect(writeRan).toBe(false);
+      const block = result.messages
+        .flatMap((m) => m.content)
+        .find((b) => b.type === 'tool_result');
+      expect(block).toMatchObject({ isError: true });
+    });
+  });
+
+  describe('goal reminder', () => {
+    function lastNote(req: { messages: readonly Message[] } | undefined): string {
+      return (
+        req?.messages
+          .at(-1)
+          ?.content.filter((b) => b.type === 'text')
+          .map((b) => (b as { text: string }).text)
+          .join('\n\n') ?? ''
+      );
+    }
+    const nEchoTurns = (n: number) =>
+      new ScriptedProvider(Array.from({ length: n }, () => ({ toolCalls: [{ name: 'echo', input: {} }] })));
+    const echoTools = () =>
+      new ToolRegistry([trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true })]);
+
+    it('stays silent before turn 12 and fires on turn 16 with the original goal and open todos', async () => {
+      const provider = nEchoTurns(16);
+      const session = new SessionState();
+      session.setTodos([
+        { id: '1', content: 'fix the parser', status: 'in_progress' },
+        { id: '2', content: 'already done', status: 'completed' },
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        session,
+        maxTurns: 16,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      await loop.run([userText('fix the parser bug')]);
+
+      expect(lastNote(provider.requests[10])).not.toMatch(/\[goal reminder\]/);
+      const note = lastNote(provider.requests[15]);
+      expect(note).toMatch(/\[goal reminder\]/);
+      expect(note).toContain('fix the parser bug');
+      expect(note).toContain('fix the parser');
+      expect(note).not.toContain('already done');
+    });
+
+    it('does not fire when maxTurns is below the length threshold', async () => {
+      const provider = nEchoTurns(8);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: echoTools(),
+        cwd: '/tmp',
+        maxTurns: 8,
+        turnBudgetHints: false,
+        stepBackHints: false,
+      });
+
+      await loop.run([userText('a short task')]);
+
+      for (const req of provider.requests) {
+        expect(lastNote(req)).not.toMatch(/\[goal reminder\]/);
+      }
+    });
+
+    it('injects goal reminder before turn-budget and step-back notes', async () => {
+      const failTool: ToolSpec<unknown> = {
+        name: 'boom',
+        description: 'always errors',
+        schema: noInput,
+        readOnly: true,
+        concurrencySafe: true,
+        async execute() {
+          return { content: 'nope', isError: true };
+        },
+      };
+      const provider = new ScriptedProvider(
+        Array.from({ length: 16 }, () => ({ toolCalls: [{ name: 'boom', input: {} }] })),
+      );
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([failTool]),
+        cwd: '/tmp',
+        maxTurns: 16,
+      });
+
+      await loop.run([userText('keep going')]);
+
+      const note = lastNote(provider.requests[15]);
+      const goalAt = note.indexOf('[goal reminder]');
+      const budgetAt = note.indexOf('[turn budget]');
+      const stepAt = note.indexOf('[step back]');
+      expect(goalAt).toBeGreaterThanOrEqual(0);
+      expect(budgetAt).toBeGreaterThan(goalAt);
+      expect(stepAt).toBeGreaterThan(budgetAt);
+    });
+  });
+
+  describe('varyObservations', () => {
+    it('leaves tool results unchanged by default', async () => {
+      const provider = new ScriptedProvider([
+        { toolCalls: [{ name: 'echo', input: {}, id: 'call_a' }] },
+        { text: 'done' },
+      ]);
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([
+          trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true, delayMs: 0 }),
+        ]),
+        cwd: '/tmp',
+      });
+      const result = await loop.run([userText('hi')]);
+      const block = result.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_result');
+      expect(block).toMatchObject({ content: 'echo ran' });
+    });
+
+    it('wraps successful new results when enabled, leaving errors alone', async () => {
+      const provider = new ScriptedProvider([
+        {
+          toolCalls: [
+            { name: 'echo', input: {}, id: 'call_ok' },
+            { name: 'boom', input: {}, id: 'call_err' },
+          ],
+        },
+        { text: 'done' },
+      ]);
+      const boom: ToolSpec<unknown> = {
+        name: 'boom',
+        description: 'errors',
+        schema: noInput,
+        readOnly: true,
+        concurrencySafe: true,
+        async execute() {
+          return { content: 'nope', isError: true };
+        },
+      };
+      const loop = new AgentLoop({
+        model: resolvedModel(provider),
+        tools: new ToolRegistry([
+          trackingTool({ name: 'echo', readOnly: true, concurrencySafe: true, delayMs: 0 }),
+          boom,
+        ]),
+        cwd: '/tmp',
+        varyObservations: true,
+      });
+      const result = await loop.run([userText('hi')]);
+      const blocks = result.messages
+        .flatMap((m) => m.content)
+        .filter((b) => b.type === 'tool_result') as Array<{ content: string; isError?: boolean }>;
+      const ok = blocks.find((b) => !b.isError);
+      const err = blocks.find((b) => b.isError);
+      expect(ok?.content).toContain('echo ran');
+      expect(err?.content).toBe('nope');
+    });
   });
 });

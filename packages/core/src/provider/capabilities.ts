@@ -35,6 +35,13 @@ export interface ModelCapabilities {
   fixedTemperature?: boolean;
   /** Use `developer` instead of `system` for the system message. */
   developerRole?: boolean;
+  /**
+   * Endpoint accepts OpenAI `tool_choice: { type: "allowed_tools", … }` so a
+   * skill can constrain decoding without mutating the `tools` array (and
+   * punching the prompt cache). Default off — most OpenAI-compat gateways
+   * 400 on an unknown `tool_choice` shape.
+   */
+  allowedToolsChoice?: boolean;
   pricing?: Pricing;
 }
 
@@ -217,7 +224,7 @@ const RULES: CapabilityRule[] = [
 const PROVIDER_DEFAULTS: Record<string, Partial<ModelCapabilities>> = {
   deepseek: { promptCache: 'implicit' },
   moonshot: { promptCache: 'implicit' },
-  openai: { promptCache: 'implicit', jsonMode: true },
+  openai: { promptCache: 'implicit', jsonMode: true, allowedToolsChoice: true },
   ollama: { streamUsage: false, parallelToolCalls: false },
   vllm: { streamUsage: false },
   llamacpp: { nativeTools: false, streamUsage: false },

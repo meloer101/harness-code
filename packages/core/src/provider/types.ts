@@ -95,7 +95,12 @@ export interface ToolDefinition {
   inputSchema: JSONSchema;
 }
 
-export type ToolChoice = 'auto' | 'none' | 'required' | { name: string };
+export type ToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { name: string }
+  | { type: 'allowed_tools'; mode: 'auto' | 'required'; names: string[] };
 
 // ---------------------------------------------------------------------------
 // Request / response

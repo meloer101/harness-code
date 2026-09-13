@@ -71,7 +71,6 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   const agentDir = mockDir ?? join(projectRoot, AGENT_DIR);
 
   const buildConfig = resolveConfigFactory(opts, mockDir);
-  const registry = new SessionRegistry({ cwd, agentDir, buildConfig });
 
   const serverInfo = async (): Promise<ServerInfo> => {
     const { settings } = await loadSettings(cwd);
@@ -85,6 +84,18 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       modes: PERMISSION_MODES,
     };
   };
+
+  const registry = new SessionRegistry({
+    cwd,
+    agentDir,
+    buildConfig,
+    previewDefaults: async () => {
+      const info = await serverInfo();
+      const { settings } = await loadSettings(cwd);
+      const mode = settings.permissions?.mode ?? 'ask';
+      return { modelRef: info.defaultModel, mode };
+    },
+  });
 
   const staticDir = opts.staticDir ?? resolveStaticDir();
   const httpServer = createServer(

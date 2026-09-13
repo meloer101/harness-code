@@ -16,7 +16,14 @@ import {
   normalizeHistory,
   readSessionSummary,
   rebuildSessionState,
+  sessionArtifactsDir,
 } from './session.js';
+
+describe('sessionArtifactsDir', () => {
+  it('is a sibling directory of the jsonl, named by session id', () => {
+    expect(sessionArtifactsDir('/proj/.agent', 'abc')).toBe(join('/proj/.agent', 'sessions', 'abc'));
+  });
+});
 
 describe('SessionState', () => {
   it('tracks which files have been read', () => {

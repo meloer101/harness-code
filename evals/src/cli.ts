@@ -6,7 +6,12 @@
  *   --runs <n>           override each task's run count
  *   --record             hit the real endpoint, (re)write cassettes + baseline
  *   --model <ref>        model for --record / --ablation (default: task's own)
- *   --ablation compaction   run the suite twice (compaction on/off), print a comparison
+ *   --ablation <dim>     run the suite twice and print a comparison; <dim> is one of:
+ *                          compaction    — compaction on/off (under a squeezed window)
+ *                          subagents     — the `task` tool offered vs. not
+ *                          prompt-tools  — prompt-encoded vs. native tool calling
+ *                        Every ablation arm hits the real endpoint (a changed tool set
+ *                        or window can't replay a cassette), so it needs a key in .env.
  *   --update-baseline    write the current numbers to baseline.json
  *   --keep               leave workspaces on disk
  *   --no-gate            don't exit non-zero on regression
@@ -24,12 +29,15 @@ import { runTask } from './runner.js';
 import type { RunConfig, TaskResult } from './runner.js';
 import { evalsRoot, loadTasks } from './tasks.js';
 
+type AblationDim = 'compaction' | 'subagents' | 'prompt-tools';
+const ABLATION_DIMS: readonly AblationDim[] = ['compaction', 'subagents', 'prompt-tools'];
+
 interface Flags {
   tasks: string[];
   runs?: number;
   record: boolean;
   model?: string;
-  ablation?: 'compaction';
+  ablation?: AblationDim;
   updateBaseline: boolean;
   keep: boolean;
   gate: boolean;
@@ -46,8 +54,10 @@ function parseFlags(argv: string[]): Flags {
       case '--model': f.model = req(argv, ++i, a); break;
       case '--ablation': {
         const v = req(argv, ++i, a);
-        if (v !== 'compaction') fail(`--ablation only supports "compaction" (got "${v}")`);
-        f.ablation = 'compaction';
+        if (!(ABLATION_DIMS as readonly string[]).includes(v)) {
+          fail(`--ablation supports ${ABLATION_DIMS.map((d) => `"${d}"`).join(', ')} (got "${v}")`);
+        }
+        f.ablation = v as AblationDim;
         break;
       }
       case '--update-baseline': f.updateBaseline = true; break;
@@ -121,8 +131,8 @@ async function main(): Promise<void> {
     ...(flags.keep ? { keep: true } : {}),
   };
 
-  if (flags.ablation === 'compaction') {
-    await runAblation(tasks, base, model, resultsDir);
+  if (flags.ablation) {
+    await runAblation(flags.ablation, tasks, base, model, resultsDir);
     return;
   }
 
@@ -154,7 +164,53 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * One ablation dimension = two arms (`on`/`off`), each an independent live pass
+ * of the suite. Every arm hits the real endpoint: flipping compaction, the tool
+ * set, or native-vs-prompt tool calling all change the request fingerprint, so a
+ * recorded cassette can't replay these.
+ */
+interface AblationSpec {
+  /** Column labels for the comparison table. */
+  arms: { on: string; off: string };
+  onCfg: Partial<RunConfig>;
+  offCfg: Partial<RunConfig>;
+}
+
+function ablationSpec(kind: AblationDim): AblationSpec {
+  switch (kind) {
+    case 'compaction':
+      // Squeeze the window so even these short tasks approach the ceiling. Tasks
+      // this small resolve before context is truly exhausted — the compaction
+      // ablation is most meaningful on a long-context task (follow-up).
+      return {
+        arms: { on: 'on', off: 'off' },
+        onCfg: { contextWindow: 20_000, maxOutputTokens: 4_000, compaction: 0.6 },
+        offCfg: { contextWindow: 20_000, maxOutputTokens: 4_000, compaction: false },
+      };
+    case 'subagents':
+      // Normal window. `on` offers the `task` tool (builtin sub-agents incl. the
+      // read-only `explore` agent); `off` withholds it. On these small fixtures
+      // the model rarely dispatches a sub-agent — the signal is clearest on a
+      // large-repo exploration task (follow-up); the runner is the deliverable.
+      return {
+        arms: { on: 'task tool', off: 'no task tool' },
+        onCfg: { subagents: true },
+        offCfg: {},
+      };
+    case 'prompt-tools':
+      // Normal window. `on` forces prompt-encoded tool calling (nativeTools off);
+      // `off` uses the endpoint's native tool calling.
+      return {
+        arms: { on: 'prompt-encoded', off: 'native' },
+        onCfg: { promptTools: true },
+        offCfg: {},
+      };
+  }
+}
+
 async function runAblation(
+  kind: AblationDim,
   tasks: Awaited<ReturnType<typeof loadTasks>>,
   base: RunConfig,
   model: string,
@@ -169,20 +225,13 @@ async function runAblation(
     return out;
   };
 
-  // Squeeze the window so even these short tasks approach the ceiling. Note that
-  // tasks this small resolve before context is truly exhausted — the compaction
-  // ablation is most meaningful on a long-context task (follow-up).
-  const constrained = { contextWindow: 20_000, maxOutputTokens: 4_000 };
-  const on = buildReport(
-    await arm('compact-on', { ...constrained, compaction: 0.6 }),
-    model,
-  );
-  const off = buildReport(
-    await arm('compact-off', { ...constrained, compaction: false }),
-    model,
-  );
-  await writeFile(join(resultsDir, 'ablation-compaction.json'), JSON.stringify({ on, off }, null, 2));
-  process.stdout.write(`\n${renderComparison('compaction', on, off)}\n`);
+  const spec = ablationSpec(kind);
+  // Labels seed trace ids / result buckets, so keep them filesystem-safe.
+  const slug = (s: string): string => `${kind}-${s.replace(/\s+/g, '-')}`;
+  const on = buildReport(await arm(slug(spec.arms.on), spec.onCfg), model);
+  const off = buildReport(await arm(slug(spec.arms.off), spec.offCfg), model);
+  await writeFile(join(resultsDir, `ablation-${kind}.json`), JSON.stringify({ on, off }, null, 2));
+  process.stdout.write(`\n${renderComparison(kind, on, off, spec.arms)}\n`);
 }
 
 void main().catch((err: unknown) => {

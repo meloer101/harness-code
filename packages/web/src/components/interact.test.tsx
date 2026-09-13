@@ -91,6 +91,7 @@ function dockView(over: Partial<SessionViewState> = {}): SessionViewState {
     pendingAsk: { toolName: 'bash', input: { command: 'rm -rf /' }, reason: 'bash needs approval' },
     pendingPlan: null,
     running: true,
+    hydrating: false,
     askId: 'a1',
     planId: null,
     ...over,

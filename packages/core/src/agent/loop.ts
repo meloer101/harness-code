@@ -10,7 +10,7 @@
 import { estimateCostUSD } from '../provider/capabilities.js';
 import { backoffMs, sleep } from '../provider/retry.js';
 import { analyzeStableParts, breakdownFrom } from '../context/budget.js';
-import { estimateMessageTokens, estimateRequestTokens } from '../context/tokenizer.js';
+import { estimateMessageTokens, estimateRequestTokens, heuristicTokenCount, createTokenCalibrator } from '../context/tokenizer.js';
 import type { ResolvedModel } from '../provider/router.js';
 import {
   ProviderError,
@@ -24,10 +24,14 @@ import type {
   ModelResponse,
   StopReason,
   SystemSegment,
+  ToolChoice,
   ToolResultBlock,
   ToolUseBlock,
   Usage,
 } from '../provider/types.js';
+import { allowedToolNames } from '../skills/narrow.js';
+import { parseGoalAndPriorDigest } from '../context/compactor.js';
+import { maybeVaryObservation } from './observations.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolResult } from '../tools/types.js';
 import { errorMessage } from '../tools/util.js';
@@ -166,6 +170,18 @@ export interface AgentLoopOptions {
    * `true`.
    */
   stepBackHints?: boolean;
+  /**
+   * Past turn 12, every 8 turns, append an ephemeral restatement of the
+   * original goal and any open todos. Counters lost-in-the-middle in long
+   * sessions that have not yet compacted. Default `true`.
+   */
+  goalRestateHints?: boolean;
+  /**
+   * Rotate the wrapper around newly-created successful tool_result bodies so
+   * long sessions do not overfit a single observation template. Default
+   * `false` — off until a repeated-pattern regression is observed.
+   */
+  varyObservations?: boolean;
   maxCostUSD?: number;
   /** Stop once cumulative input+output tokens exceed this. */
   maxTokens?: number;
@@ -243,10 +259,13 @@ export class AgentLoop {
   private readonly contextStopRatio: number;
   private readonly turnBudgetHints: boolean;
   private readonly stepBackHints: boolean;
+  private readonly goalRestateHints: boolean;
+  private readonly varyObservations: boolean;
   private readonly maxTurnRetries: number;
   private readonly maxStopGateContinuations: number;
   private readonly finalSummaryTurn: boolean;
   private readonly retryBackoffMs: (attempt: number) => number;
+  private readonly calibrator = createTokenCalibrator();
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.hooks = opts.hooks ?? allowAllHooks;
@@ -254,6 +273,8 @@ export class AgentLoop {
     this.maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     this.turnBudgetHints = opts.turnBudgetHints ?? true;
     this.stepBackHints = opts.stepBackHints ?? true;
+    this.goalRestateHints = opts.goalRestateHints ?? true;
+    this.varyObservations = opts.varyObservations ?? false;
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
     this.maxTurnRetries = Math.max(0, opts.maxTurnRetries ?? DEFAULT_MAX_TURN_RETRIES);
     this.maxStopGateContinuations = Math.max(
@@ -288,10 +309,13 @@ export class AgentLoop {
     // The fixed buckets — system / project memory / tool schemas — don't change
     // within a run, so cost them once. `history` is then the remainder of the
     // anchored total, no full re-flatten per turn.
-    const stableParts = analyzeStableParts({
-      system: this.opts.system,
-      tools: this.opts.tools.definitions(),
-    });
+    const stableParts = analyzeStableParts(
+      {
+        system: this.opts.system,
+        tools: this.opts.tools.definitions(),
+      },
+      this.calibrator.count,
+    );
     // Anchored on the endpoint's real `usage` from the previous turn, so
     // estimation error only accrues on the tool_result messages we appended
     // since — not on a full-history heuristic pass every turn.
@@ -329,6 +353,10 @@ export class AgentLoop {
         ...(this.opts.system ? { system: this.opts.system } : {}),
         ...(this.opts.signal ? { signal: this.opts.signal } : {}),
       };
+      if (!toolless) {
+        const toolChoice = this.skillToolChoice();
+        if (toolChoice) request.toolChoice = toolChoice;
+      }
       request.messages = this.withEphemeralNotes(
         messages,
         turn,
@@ -345,7 +373,7 @@ export class AgentLoop {
 
       let contextTokens =
         prevUsage === undefined
-          ? estimateRequestTokens(request)
+          ? estimateRequestTokens(request, this.calibrator.count)
           : prevUsage.inputTokens + prevUsage.outputTokens + appendedTokens;
       let ratio = contextTokens / availableWindow;
 
@@ -480,6 +508,12 @@ export class AgentLoop {
       }
 
       usage = addUsage(usage, response.usage);
+      if (!response.usage.estimated && response.usage.inputTokens > 0) {
+        this.calibrator.observe(
+          estimateRequestTokens(request, heuristicTokenCount),
+          response.usage.inputTokens,
+        );
+      }
       const pricing = this.opts.model.capabilities.pricing;
       const callCostUSD = pricing ? estimateCostUSD(response.usage, pricing) : undefined;
       if (callCostUSD !== undefined) costUSD += callCostUSD;
@@ -523,7 +557,7 @@ export class AgentLoop {
               messages.push(contMsg);
               await this.opts.recorder?.recordMessage(contMsg);
               prevUsage = response.usage;
-              appendedTokens = estimateMessageTokens([contMsg]);
+              appendedTokens = estimateMessageTokens([contMsg], this.calibrator.count);
               continue;
             }
           }
@@ -546,7 +580,7 @@ export class AgentLoop {
       if (endsRun) return this.stop(messages, usage, completedTurns, 'stopped_by_tool');
 
       prevUsage = response.usage;
-      appendedTokens = estimateMessageTokens([userMessage]);
+      appendedTokens = estimateMessageTokens([userMessage], this.calibrator.count);
     }
   }
 
@@ -572,6 +606,7 @@ export class AgentLoop {
     toolless = false,
   ): Message[] {
     const notes = [
+      this.goalRestateNote(messages, turn),
       toolless ? this.finalSummaryNote(turn) : this.turnBudgetNote(turn),
       this.stallNote(consecutiveFailedTurns),
     ].filter((n): n is string => n !== undefined);
@@ -619,7 +654,7 @@ export class AgentLoop {
         nextCost += compactionCostUSD ?? 0;
       }
     }
-    const contextTokens = estimateRequestTokens({ ...request, messages });
+    const contextTokens = estimateRequestTokens({ ...request, messages }, this.calibrator.count);
     const keptTurns = compacted.keptTurns ?? 0;
     this.emit({
       type: 'compaction',
@@ -696,6 +731,25 @@ export class AgentLoop {
       `this the right path, and what is the simplest thing that would satisfy the task? If you ` +
       `are genuinely blocked, say so and stop rather than burning more turns.`
     );
+  }
+
+  /**
+   * Restate the original goal (and open todos) every 8 turns once the session
+   * is long enough that the first user message has drifted into the middle.
+   */
+  private goalRestateNote(messages: Message[], turn: number): string | undefined {
+    if (!this.goalRestateHints) return undefined;
+    if (turn < 12 || turn % 8 !== 0) return undefined;
+    const head = messages[0];
+    if (!head) return undefined;
+    const clipped = parseGoalAndPriorDigest(head).goal.trim().slice(0, 500);
+    if (clipped === '') return undefined;
+    const open = this.session.getTodos().filter((t) => t.status !== 'completed');
+    const parts = [`[goal reminder] Original goal:\n${clipped}`];
+    if (open.length > 0) {
+      parts.push(`Open todos:\n${open.map((t) => `- [${t.status}] ${t.content}`).join('\n')}`);
+    }
+    return parts.join('\n\n');
   }
 
   private emit(event: AgentEvent): void {
@@ -890,12 +944,25 @@ export class AgentLoop {
       return {
         type: 'tool_result' as const,
         toolUseId: call.id,
-        content: result?.content ?? '',
+        content: maybeVaryObservation(result, call.id, this.varyObservations),
         ...(result?.isError ? { isError: true } : {}),
       };
     });
     const endsRun = [...results.values()].some((r) => r.endsRun === true);
     return { blocks, endsRun };
+  }
+
+  private allowedBySkills(): string[] | undefined {
+    return allowedToolNames(this.opts.tools.list(), this.opts.control?.activeSkills);
+  }
+
+  /** Decoding constraint for endpoints that accept `allowed_tools`; else undefined. */
+  private skillToolChoice(): ToolChoice | undefined {
+    const names = this.allowedBySkills();
+    if (!names) return undefined;
+    const caps = this.opts.model.capabilities;
+    if (!caps.nativeTools || !caps.allowedToolsChoice) return undefined;
+    return { type: 'allowed_tools', mode: 'auto', names };
   }
 
   private async executeOne(
@@ -905,6 +972,13 @@ export class AgentLoop {
   ): Promise<ToolResult> {
     if (decision.decision === 'deny') {
       return { content: `Denied: ${decision.reason}`, isError: true };
+    }
+    const allowed = this.allowedBySkills();
+    if (allowed && !allowed.some((n) => n.toLowerCase() === call.name.toLowerCase())) {
+      return {
+        content: `Denied: tool "${call.name}" is not permitted by the active skill's allowed-tools.`,
+        isError: true,
+      };
     }
     if (call.parseError) {
       return {

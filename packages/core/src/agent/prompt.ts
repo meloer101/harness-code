@@ -61,6 +61,8 @@ export interface BuildAgentSystemPromptOptions {
   projectMemory?: string;
   /** The `<available_skills>` manifest, from `SkillCatalog.manifest()`. Omitted when empty. */
   skillsManifest?: string;
+  /** The `<available_memory>` manifest, from `MemoryCatalog.manifest()`. Omitted when empty. */
+  memoryManifest?: string;
 }
 
 export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): SystemSegment[] {
@@ -76,6 +78,9 @@ export function buildAgentSystemPrompt(opts: BuildAgentSystemPromptOptions): Sys
   // prefix.
   if (opts.skillsManifest && opts.skillsManifest.trim() !== '') {
     segments.push({ id: 'available_skills', text: opts.skillsManifest });
+  }
+  if (opts.memoryManifest && opts.memoryManifest.trim() !== '') {
+    segments.push({ id: 'available_memory', text: opts.memoryManifest });
   }
   if (opts.projectMemory && opts.projectMemory.trim() !== '') {
     segments.push({
@@ -113,7 +118,7 @@ export interface BuildSubagentSystemPromptOptions {
  * System prompt for a dispatched sub-agent. Same `identity` + `conventions`
  * prefix as the main agent (byte-identical, so the prompt cache still hits),
  * then the sub-agent's role, then project memory and environment. No skills
- * manifest and no plan-mode overlay — a sub-agent does neither.
+ * or memory manifest and no plan-mode overlay — a sub-agent does none of those.
  */
 export function buildSubagentSystemPrompt(opts: BuildSubagentSystemPromptOptions): SystemSegment[] {
   const platform = opts.platform ?? process.platform;

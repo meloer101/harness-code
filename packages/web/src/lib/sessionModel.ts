@@ -24,6 +24,8 @@ import type {
 export interface SessionViewState extends FoldState {
   id: string;
   running: boolean;
+  /** True while `session.open` is hydrating a disk session after `session.preview`. */
+  hydrating: boolean;
   /** Ids of the pending requests, for `ask.answer` / `plan.answer`. */
   askId: string | null;
   planId: string | null;
@@ -44,8 +46,8 @@ export class SessionModel {
   #liveDirty = false;
   #lastSeq: number;
 
-  constructor(snapshot: SessionSnapshot) {
-    this.#state = stateFromSnapshot(snapshot);
+  constructor(snapshot: SessionSnapshot, opts: { hydrating?: boolean } = {}) {
+    this.#state = stateFromSnapshot(snapshot, opts);
     this.#lastSeq = snapshot.lastSeq;
   }
 
@@ -63,11 +65,15 @@ export class SessionModel {
   }
 
   /** Replace everything with a server snapshot (first open, or a `reset` on resubscribe). */
-  reset(snapshot: SessionSnapshot): void {
+  reset(snapshot: SessionSnapshot, opts: { hydrating?: boolean } = {}): void {
     this.#buffer.reset();
     this.#liveDirty = false;
-    this.#state = stateFromSnapshot(snapshot);
+    this.#state = stateFromSnapshot(snapshot, opts);
     this.#lastSeq = snapshot.lastSeq;
+  }
+
+  setHydrating(hydrating: boolean): void {
+    this.#state = { ...this.#state, hydrating };
   }
 
   /** Fold one event. Returns false when it was a duplicate (`seq <= lastSeq`) and was dropped. */
@@ -201,12 +207,15 @@ export class SessionModel {
   }
 
   #dispatch(action: FoldAction): void {
-    const { id, running, askId, planId } = this.#state;
-    this.#state = { ...foldReducer(this.#state, action), id, running, askId, planId };
+    const { id, running, hydrating, askId, planId } = this.#state;
+    this.#state = { ...foldReducer(this.#state, action), id, running, hydrating, askId, planId };
   }
 }
 
-export function stateFromSnapshot(s: SessionSnapshot): SessionViewState {
+export function stateFromSnapshot(
+  s: SessionSnapshot,
+  opts: { hydrating?: boolean } = {},
+): SessionViewState {
   const base = initialFoldState({ mode: s.mode, modelRef: s.modelRef });
   return {
     ...base,
@@ -219,6 +228,7 @@ export function stateFromSnapshot(s: SessionSnapshot): SessionViewState {
     pendingPlan: s.pendingPlan ? { title: s.pendingPlan.title, body: s.pendingPlan.body } : null,
     id: s.id,
     running: s.running,
+    hydrating: opts.hydrating ?? false,
     askId: s.pendingAsk?.askId ?? null,
     planId: s.pendingPlan?.planId ?? null,
   };

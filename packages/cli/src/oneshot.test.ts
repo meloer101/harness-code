@@ -37,6 +37,7 @@ async function config(turns: ScriptedTurn[]): Promise<AgentSessionConfig> {
     skills: false,
     subagents: false,
     mcp: false,
+    memory: false,
     recorder: false,
     trace: false,
     projectMemory: null,

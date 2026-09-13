@@ -548,6 +548,61 @@ describe('OpenAICompatProvider timeouts', () => {
   });
 });
 
+describe('OpenAICompatProvider tool_choice', () => {
+  it('maps allowed_tools onto the OpenAI Chat Completions shape', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const spy: typeof fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return sseFetch(sseFrames([delta({ content: 'ok' }, 'stop')]))('', {});
+    }) as unknown as typeof fetch;
+
+    const p = provider(spy);
+    await drainStream(
+      p.stream({
+        ...ask,
+        tools: [{ name: 'read', description: 'Read a file', inputSchema: { type: 'object' } }],
+        toolChoice: { type: 'allowed_tools', mode: 'auto', names: ['read', 'grep'] },
+      }),
+    );
+
+    expect(bodies[0]?.['tool_choice']).toEqual({
+      type: 'allowed_tools',
+      mode: 'auto',
+      tools: [
+        { type: 'function', function: { name: 'read' } },
+        { type: 'function', function: { name: 'grep' } },
+      ],
+    });
+    expect(bodies[0]?.['tools']).toEqual([
+      {
+        type: 'function',
+        function: { name: 'read', description: 'Read a file', parameters: { type: 'object' } },
+      },
+    ]);
+  });
+
+  it('still maps a forced single tool by name', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const spy: typeof fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return sseFetch(sseFrames([delta({ content: 'ok' }, 'stop')]))('', {});
+    }) as unknown as typeof fetch;
+
+    await drainStream(
+      provider(spy).stream({
+        ...ask,
+        tools: [{ name: 'read', description: 'Read a file', inputSchema: { type: 'object' } }],
+        toolChoice: { name: 'read' },
+      }),
+    );
+
+    expect(bodies[0]?.['tool_choice']).toEqual({
+      type: 'function',
+      function: { name: 'read' },
+    });
+  });
+});
+
 describe('vitest sanity', () => {
   it('has fake timers available for later phases', () => {
     expect(vi).toBeDefined();

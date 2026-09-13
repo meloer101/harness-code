@@ -31,6 +31,7 @@ import { methods } from '@harness-code/protocol';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { BusyError, SessionNotFoundError } from './host.js';
+import { SessionPreviewNotFoundError } from './registry.js';
 import type { SessionHost } from './host.js';
 import type { SessionRegistry } from './registry.js';
 
@@ -212,6 +213,8 @@ class Connection {
         return registry.create(params as MethodParams<'session.create'>);
       case 'session.open':
         return registry.open(params as MethodParams<'session.open'>);
+      case 'session.preview':
+        return registry.preview(params as MethodParams<'session.preview'>);
       case 'session.unsubscribe':
       case 'session.subscribe':
         // Handled before dispatch; unreachable.
@@ -356,6 +359,7 @@ function isClientFrame(value: unknown): value is ClientFrame {
 function mapError(err: unknown): { code: ErrorCode; message: string } {
   if (err instanceof BusyError) return { code: 'busy', message: err.message };
   if (err instanceof SessionNotFoundError) return { code: 'not_found', message: err.message };
+  if (err instanceof SessionPreviewNotFoundError) return { code: 'not_found', message: err.message };
   const message = err instanceof Error ? err.message : String(err);
   return { code: 'internal', message };
 }

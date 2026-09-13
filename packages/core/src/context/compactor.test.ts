@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { ScriptedProvider } from '../provider/mock.js';
 import type { Message } from '../provider/types.js';
 import {
   COMPACTION_MARKER,
   PRUNED_TOOL_RESULT_PREFIX,
+  applyToolOutputOffload,
   compactMessages,
   createCompactor,
+  ensureInvariants,
+  extractCompactionInvariants,
   parseGoalAndPriorDigest,
   pruneToolOutputs,
   splitForCompaction,
@@ -107,6 +113,42 @@ describe('compactMessages / parseGoalAndPriorDigest', () => {
   });
 });
 
+describe('extractCompactionInvariants / ensureInvariants', () => {
+  it('picks up a user prohibition and a Denied tool_result', () => {
+    const msgs: Message[] = [
+      goal('fix the bug. 不要碰 secrets/'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'bash', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'c1',
+            content: 'Denied: path outside workspace',
+            isError: true,
+          },
+        ],
+      },
+    ];
+    const inv = extractCompactionInvariants(msgs);
+    expect(inv.some((s) => s.includes('不要碰 secrets/'))).toBe(true);
+    expect(inv.some((s) => s.startsWith('Denied:'))).toBe(true);
+  });
+
+  it('prepends missing invariants and leaves a complete digest alone', () => {
+    expect(ensureInvariants('keep', [])).toBe('keep');
+    expect(ensureInvariants('already 不要碰 secrets/ here', ['不要碰 secrets/'])).toBe(
+      'already 不要碰 secrets/ here',
+    );
+    const out = ensureInvariants('## 任务状态\nok', ['不要碰 secrets/']);
+    expect(out).toContain('不要碰 secrets/');
+    expect(out.indexOf('不要碰 secrets/')).toBeLessThan(out.indexOf('任务状态'));
+  });
+});
+
 describe('createCompactor', () => {
   it('summarizes the middle and returns [head+digest, ...tail]', async () => {
     const provider = new ScriptedProvider([{ text: '## 任务状态\n- 原始目标：fix the parser bug\n## 协作与风格备忘\n- 与用户协作：无偏差' }]);
@@ -169,6 +211,28 @@ describe('createCompactor', () => {
 
     expect(result).toBeUndefined();
     expect(provider.callCount).toBe(0);
+  });
+
+  it('keeps a user prohibition in the digest even when the summarizer drops it', async () => {
+    const provider = new ScriptedProvider([
+      { text: '## 任务状态\n- 进展：did stuff\n## 协作与风格备忘\n- 无偏差' },
+    ]);
+    const onCompact = createCompactor({
+      provider,
+      model: 'm',
+      conventions: 'c',
+      minCompactTokens: 0,
+    });
+    // Prohibition sits in the compactable middle, not the verbatim goal/tail.
+    const msgs: Message[] = [
+      goal('fix the parser'),
+      { role: 'assistant', content: [{ type: 'text', text: 'got it' }] },
+      { role: 'user', content: [{ type: 'text', text: '顺便说：不要碰 secrets/' }] },
+      ...history(10).slice(1),
+    ];
+    const result = await onCompact(msgs, { usedTokens: 1, windowTokens: 1, ratio: 1 }, ctx);
+    const headText = (result!.messages[0]?.content[0] as { text: string }).text;
+    expect(headText).toContain('不要碰 secrets/');
   });
 
   it('returns a prune-only result when history is too short to summarize', async () => {
@@ -357,5 +421,63 @@ describe('pruneToolOutputs', () => {
     ];
     const out = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 100 });
     expect(out.reclaimedTokens).toBe(heuristicTokenCount(body));
+  });
+});
+
+describe('applyToolOutputOffload', () => {
+  it('writes pruned bodies to disk and points the placeholder at a readable path', async () => {
+    const body = 'z'.repeat(40_000);
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'read', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: body }],
+      },
+    ];
+    const pruned = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 100 });
+    const dir = await mkdtemp(join(tmpdir(), 'hc-toolout-'));
+    const cwd = join(dir, '..');
+    const offloaded = await applyToolOutputOffload(pruned, { dir, cwd });
+
+    const result = offloaded.messages[2]!.content[0] as { content: string };
+    expect(result.content).toContain(PRUNED_TOOL_RESULT_PREFIX);
+    expect(result.content).toMatch(/Use the read tool to retrieve the original output/);
+    const match = result.content.match(/→\s+(\S+\.txt)/);
+    expect(match).toBeTruthy();
+    const rel = match![1]!;
+    const written = await readFile(join(cwd, rel), 'utf8');
+    expect(written).toBe(body);
+  });
+
+  it('falls back to the re-call placeholder when a write fails, without throwing', async () => {
+    const body = 'z'.repeat(40_000);
+    const msgs: Message[] = [
+      goal('g'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'bash', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', content: body }],
+      },
+    ];
+    const pruned = pruneToolOutputs(msgs, { protectTokens: 0, minReclaimTokens: 100 });
+    const offloaded = await applyToolOutputOffload(pruned, {
+      dir: '/tmp/hc-toolout-unused',
+      cwd: '/tmp',
+      writeFile: async () => {
+        throw new Error('ENOSPC');
+      },
+    });
+
+    const result = offloaded.messages[2]!.content[0] as { content: string };
+    expect(result.content).toContain(PRUNED_TOOL_RESULT_PREFIX);
+    expect(result.content).toMatch(/Re-call the tool/);
+    expect(result.content).not.toMatch(/→/);
   });
 });

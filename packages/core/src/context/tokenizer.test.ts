@@ -8,6 +8,7 @@ import {
   estimateRequestTokens,
   flattenRequestText,
   heuristicTokenCount,
+  createTokenCalibrator,
 } from './tokenizer.js';
 
 describe('heuristicTokenCount', () => {
@@ -86,5 +87,43 @@ describe('estimateMessageTokens', () => {
       },
     ]);
     expect(big).toBeGreaterThan(small + 100);
+  });
+});
+
+describe('createTokenCalibrator', () => {
+  it('matches the heuristic on a cold start', () => {
+    const cal = createTokenCalibrator();
+    const text = 'give read.ts a pagination bound and write a test';
+    expect(cal.count(text)).toBe(heuristicTokenCount(text));
+    expect(cal.count('')).toBe(0);
+  });
+
+  it('reduces mean relative error after observing a systematic bias', () => {
+    const text = 'hello world '.repeat(40);
+    const heuristic = heuristicTokenCount(text);
+    const actual = heuristic * 2;
+    const cal = createTokenCalibrator({ alpha: 0.5 });
+    const errBefore = Math.abs(cal.count(text) - actual) / actual;
+    for (let i = 0; i < 8; i++) cal.observe(heuristic, actual);
+    const errAfter = Math.abs(cal.count(text) - actual) / actual;
+    expect(errAfter).toBeLessThan(errBefore);
+    expect(errAfter).toBeLessThan(0.05);
+  });
+
+  it('clamps the scale so one outlier cannot double-count forever', () => {
+    const cal = createTokenCalibrator({ alpha: 1 });
+    cal.observe(100, 10_000);
+    const text = 'abcd'.repeat(25);
+    expect(cal.count(text)).toBe(Math.round(heuristicTokenCount(text) * 2));
+    cal.observe(100, 1);
+    expect(cal.count(text)).toBe(Math.round(heuristicTokenCount(text) * 0.5));
+  });
+
+  it('ignores a zero estimated or actual sample', () => {
+    const cal = createTokenCalibrator({ alpha: 1 });
+    cal.observe(0, 100);
+    cal.observe(50, 0);
+    const text = 'abcd'.repeat(25);
+    expect(cal.count(text)).toBe(heuristicTokenCount(text));
   });
 });

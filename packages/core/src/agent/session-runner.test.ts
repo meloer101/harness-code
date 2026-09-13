@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +74,7 @@ async function createSession(overrides: Partial<AgentSessionConfig> = {}): Promi
     skills: false,
     subagents: false,
     mcp: false,
+    memory: false,
     recorder: false,
     trace: false,
     projectMemory: null,
@@ -296,5 +297,96 @@ describe('AgentSession', () => {
     expect(saved).not.toBeNull();
     expect(saved!.tokensAfter).toBeLessThan(saved!.tokensBefore);
     expect(session.messages.length).toBeLessThan(before);
+  });
+});
+
+describe('AgentSession persistent memory', () => {
+  it('flushes a write on close and a second session can read it', async () => {
+    const cwd = await tempDir();
+    const home = await tempDir();
+    const builtin = await tempDir();
+    const path = 'feedback/testing-no-mocks.md';
+
+    const first = new ScriptedProvider([
+      {
+        toolCalls: [
+          {
+            name: 'memory',
+            input: {
+              action: 'write',
+              scope: 'project',
+              path,
+              type: 'feedback',
+              description: 'no mock db',
+              body: 'Use a real test database.',
+            },
+          },
+        ],
+      },
+      { text: 'noted' },
+    ]);
+    const a = await createSession({
+      cwd,
+      homeDir: home,
+      builtinMemoryDir: builtin,
+      memory: true,
+      model: sessionModel(first),
+    });
+    await a.session.runTurn('remember this');
+    await a.session.close();
+    expect(a.notices.some((n) => n.kind === 'memory' && /Saved/.test(n.text))).toBe(true);
+
+    const second = new ScriptedProvider([
+      { toolCalls: [{ name: 'memory', input: { action: 'read', scope: 'project', path } }] },
+      { text: 'got it' },
+    ]);
+    const b = await createSession({
+      cwd,
+      homeDir: home,
+      builtinMemoryDir: builtin,
+      memory: true,
+      model: sessionModel(second),
+    });
+    await b.session.runTurn('what was the testing note?');
+    const read = lastToolEnd(b.events, 'memory');
+    expect(read?.result.isError).toBeFalsy();
+    expect(read?.result.content).toContain('real test database');
+    await b.session.close();
+  });
+
+  it('read of a just-written path hits the buffer before close', async () => {
+    const cwd = await tempDir();
+    const provider = new ScriptedProvider([
+      {
+        toolCalls: [
+          {
+            name: 'memory',
+            input: {
+              action: 'write',
+              scope: 'project',
+              path: 'feedback/foo.md',
+              type: 'feedback',
+              description: 'foo',
+              body: 'staged body',
+            },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'memory', input: { action: 'read', scope: 'project', path: 'feedback/foo.md' } }] },
+      { text: 'ok' },
+    ]);
+    const { session, events } = await createSession({
+      cwd,
+      homeDir: await tempDir(),
+      builtinMemoryDir: await tempDir(),
+      memory: true,
+      model: sessionModel(provider),
+    });
+    await session.runTurn('write then read');
+    const reads = events.filter((e): e is ToolCallEndEvent => e.type === 'tool_call_end' && e.name === 'memory');
+    expect(reads).toHaveLength(2);
+    expect(reads[1]?.result.content).toContain('staged body');
+    await expect(access(join(cwd, '.agent', 'memory', 'feedback', 'foo.md'))).rejects.toThrow();
+    await session.close();
   });
 });

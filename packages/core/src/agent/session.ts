@@ -85,6 +85,11 @@ export function sessionPath(agentDir: string, id: string): string {
   return join(agentDir, SESSIONS_DIR, `${id}.jsonl`);
 }
 
+/** Per-session artifact directory (pruned tool outputs, etc.), sibling of the jsonl. */
+export function sessionArtifactsDir(agentDir: string, id: string): string {
+  return join(agentDir, SESSIONS_DIR, id);
+}
+
 /** Appends session events as they happen. One instance per run. */
 export class SessionRecorder {
   readonly id: string;

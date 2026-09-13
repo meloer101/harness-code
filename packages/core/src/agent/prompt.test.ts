@@ -82,6 +82,52 @@ describe('buildAgentSystemPrompt', () => {
     expect(segments.find((s) => s.id === 'available_skills')?.text).toContain('code-review');
   });
 
+  it('inserts available_memory after skills and before project_memory', () => {
+    const segments = buildAgentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      skillsManifest: '<available_skills>\n- code-review: reviews code\n</available_skills>',
+      memoryManifest:
+        '<available_memory>\n- feedback/x.md [feedback, project]: no mocks\n</available_memory>',
+      projectMemory: '## /w/AGENTS.md\n\nnotes',
+    });
+    expect(segments.map((s) => s.id)).toEqual([
+      'identity',
+      'conventions',
+      'available_skills',
+      'available_memory',
+      'project_memory',
+      'environment',
+    ]);
+    expect(segments.find((s) => s.id === 'available_memory')?.text).toContain('feedback/x.md');
+    expect(segments.find((s) => s.id === 'available_memory')?.cacheBreakpoint).toBeFalsy();
+  });
+
+  it('keeps identity + conventions byte-identical with or without a memory manifest', () => {
+    const base = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    const withMem = buildAgentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      memoryManifest: '<available_memory>\n- user/role.md [user, global]: a person\n</available_memory>',
+    });
+    expect(withMem[0]).toEqual(base[0]);
+    expect(withMem[1]).toEqual(base[1]);
+  });
+
+  it('puts the memory write policy in the available_memory segment, not conventions', () => {
+    const base = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux' });
+    expect(base.find((s) => s.id === 'conventions')?.text).not.toContain('<available_memory>');
+    const withMem = buildAgentSystemPrompt({
+      cwd: '/w',
+      platform: 'linux',
+      memoryManifest:
+        '<available_memory>\nWrite one when you learn something that will matter.\n</available_memory>',
+    });
+    expect(withMem.find((s) => s.id === 'available_memory')?.text).toContain('matter');
+    expect(withMem[0]).toEqual(base[0]);
+    expect(withMem[1]).toEqual(base[1]);
+  });
+
   it('omits available_skills when the manifest is empty', () => {
     const segments = buildAgentSystemPrompt({ cwd: '/w', platform: 'linux', skillsManifest: '  ' });
     expect(segments.map((s) => s.id)).not.toContain('available_skills');
@@ -128,6 +174,7 @@ describe('buildSubagentSystemPrompt', () => {
       projectMemory: 'notes',
     }).map((s) => s.id);
     expect(ids).not.toContain('available_skills');
+    expect(ids).not.toContain('available_memory');
     expect(ids).not.toContain('plan_mode');
     expect(ids).toContain('project_memory');
   });

@@ -4,8 +4,8 @@
  *
  * Nothing here is exact — `js-tiktoken` would be, but the BPE tables only match
  * OpenAI models and this harness talks to a dozen endpoints. The heuristic below
- * is deliberately provider-agnostic and CJK-aware; Phase 4 revisits precision
- * once real `usage` numbers exist to calibrate against.
+ * is deliberately provider-agnostic and CJK-aware; `createTokenCalibrator` folds
+ * in real `usage` with an EMA so compact/stop thresholds self-correct per run.
  */
 
 import type { Message } from '../provider/types.js';
@@ -16,7 +16,8 @@ export type TokenCounter = (text: string) => number;
  * Rough token count for endpoints that report no usage at all (Ollama, most
  * llama.cpp builds) and for the loop's context estimate. Weighted because CJK
  * text is far denser per character than the naive chars/4 rule assumes, and
- * this project will be used on both.
+ * this project will be used on both. `createTokenCalibrator` folds in real
+ * `usage` with an EMA so compact/stop thresholds self-correct per run.
  */
 export function heuristicTokenCount(text: string): number {
   if (text === '') return 0;
@@ -35,6 +36,38 @@ export function heuristicTokenCount(text: string): number {
   }
   const ascii = text.length - cjk;
   return Math.max(1, Math.ceil(ascii / 4 + cjk * 0.75));
+}
+
+const DEFAULT_CALIBRATOR_ALPHA = 0.3;
+const CALIBRATOR_RATIO_MIN = 0.5;
+const CALIBRATOR_RATIO_MAX = 2.0;
+
+export interface TokenCalibrator {
+  count: TokenCounter;
+  observe(estimated: number, actual: number): void;
+}
+
+/**
+ * Online scale on top of `heuristicTokenCount`. Cold start is the heuristic
+ * itself (`ratio = 1`); each `observe(estimated, actual)` folds in
+ * `actual/estimated` with an EMA and clamps to `[0.5, 2]` so one wild usage
+ * report cannot blow the compact/stop thresholds.
+ */
+export function createTokenCalibrator(opts?: { alpha?: number }): TokenCalibrator {
+  const alpha = opts?.alpha ?? DEFAULT_CALIBRATOR_ALPHA;
+  let ratio = 1;
+  return {
+    count(text: string): number {
+      if (text === '') return 0;
+      return Math.max(1, Math.round(heuristicTokenCount(text) * ratio));
+    },
+    observe(estimated: number, actual: number): void {
+      if (estimated <= 0 || actual <= 0) return;
+      const sample = actual / estimated;
+      const next = alpha * sample + (1 - alpha) * ratio;
+      ratio = Math.min(CALIBRATOR_RATIO_MAX, Math.max(CALIBRATOR_RATIO_MIN, next));
+    },
+  };
 }
 
 /** The subset of a request that carries text weight. */

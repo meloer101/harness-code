@@ -100,6 +100,7 @@ export function mockConfigFactory(cwd: string, agentDir?: string): SessionConfig
       skills: false,
       subagents: false,
       mcp: false,
+      memory: false,
       recorder: agentDir !== undefined,
       ...(agentDir !== undefined ? { agentDir } : {}),
       trace: false,

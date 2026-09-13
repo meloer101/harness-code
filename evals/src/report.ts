@@ -123,11 +123,17 @@ export function renderTable(report: Report): string {
   ].join('\n');
 }
 
-/** Two arms of an ablation, side by side. */
+/**
+ * Two arms of an ablation, side by side. `arms` names the columns; it defaults
+ * to `on`/`off` (as the compaction ablation reads), but a dimension without a
+ * natural on/off — e.g. prompt-encoded vs native tool calling — can pass its own
+ * labels so the table is not misleading.
+ */
 export function renderComparison(
   label: string,
   on: Report,
   off: Report,
+  arms: { on: string; off: string } = { on: 'on', off: 'off' },
 ): string {
   const ids = on.results.map((r) => r.id);
   const rows = ids.map((id) => {
@@ -139,12 +145,12 @@ export function renderComparison(
   return [
     `### Ablation: ${label}`,
     '',
-    `| task | ${label} on (pass · tokens · turns) | ${label} off |`,
+    `| task | ${label}: ${arms.on} (pass · tokens · turns) | ${arms.off} |`,
     '| --- | --- | --- |',
     ...rows,
     '',
-    `totals — on: ${fmt(on.totals.avgTokens)} avg tokens, ${on.totals.passK}/${on.totals.tasks} pass@k · ` +
-      `off: ${fmt(off.totals.avgTokens)} avg tokens, ${off.totals.passK}/${off.totals.tasks} pass@k`,
+    `totals — ${arms.on}: ${fmt(on.totals.avgTokens)} avg tokens, ${on.totals.passK}/${on.totals.tasks} pass@k · ` +
+      `${arms.off}: ${fmt(off.totals.avgTokens)} avg tokens, ${off.totals.passK}/${off.totals.tasks} pass@k`,
   ].join('\n');
 }
 

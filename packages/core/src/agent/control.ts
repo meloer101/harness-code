@@ -20,7 +20,8 @@ export interface AgentControl {
   readonly mode: PermissionMode;
   /**
    * Skills the model has loaded this session, in load order. A skill that
-   * declared `allowed-tools` narrows the tool set offered on subsequent turns.
+   * declared `allowed-tools` constrains decoding (`tool_choice`) and the
+   * execute-time gate; the `tools` array itself stays byte-stable.
    */
   readonly activeSkills?: readonly ActiveSkill[];
   /** Record that the model loaded a skill (called by the `skill` tool). */

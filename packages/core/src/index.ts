@@ -16,6 +16,7 @@ export * from './config/budgets.js';
 export * from './permissions/index.js';
 export * from './tools/index.js';
 export * from './skills/index.js';
+export * from './memory/index.js';
 export * from './subagents/index.js';
 export * from './agent/index.js';
 export * from './mcp/index.js';

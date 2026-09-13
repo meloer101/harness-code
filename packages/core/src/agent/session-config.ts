@@ -34,6 +34,7 @@ export interface BuildSessionConfigOptions {
   compact?: boolean;
   mcp?: boolean;
   trace?: boolean;
+  memory?: boolean;
   /** Continue a previous session by id. */
   resumeId?: string;
 }
@@ -80,6 +81,7 @@ export async function buildSessionConfig(
     compact: opts.compact,
     mcp: opts.mcp,
     trace: opts.trace,
+    memory: opts.memory,
     ...(opts.resumeId ? { resumeId: opts.resumeId } : {}),
   };
 }

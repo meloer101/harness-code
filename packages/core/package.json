@@ -17,7 +17,8 @@
   "files": [
     "dist",
     "skills",
-    "agents"
+    "agents",
+    "memory"
   ],
   "scripts": {
     "build": "tsc -b"

@@ -53,7 +53,7 @@ export function SessionView({ id, onNewSession }: { id: string; onNewSession: ()
           key={id}
           sessionId={id}
           running={view.running}
-          disabled={!connected}
+          disabled={!connected || view.hydrating}
           commands={commands}
           onSend={send}
           onAbort={() => void sync.abort(id)}

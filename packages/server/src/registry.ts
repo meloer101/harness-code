@@ -10,7 +10,7 @@
  */
 
 import { AgentSession } from '@harness-code/core';
-import { listSessionIds, readSessionSummary } from '@harness-code/core';
+import { listSessionIds, loadTranscript, readSessionSummary } from '@harness-code/core';
 import type { AgentSessionConfig, PermissionMode } from '@harness-code/core';
 import type { SessionSnapshot, SessionSummary } from '@harness-code/protocol';
 
@@ -27,16 +27,28 @@ export interface SessionRegistryOptions {
   cwd: string;
   agentDir: string;
   buildConfig: SessionConfigFactory;
+  /** Defaults for `session.preview` when the session is not live. */
+  previewDefaults: () => Promise<{ modelRef: string; mode: PermissionMode }>;
+}
+
+/** Thrown when `session.preview` names a session with no on-disk transcript. */
+export class SessionPreviewNotFoundError extends Error {
+  constructor(id: string) {
+    super(`no session on disk "${id}"`);
+    this.name = 'SessionPreviewNotFoundError';
+  }
 }
 
 export class SessionRegistry {
   readonly #agentDir: string;
   readonly #buildConfig: SessionConfigFactory;
+  readonly #previewDefaults: SessionRegistryOptions['previewDefaults'];
   readonly #hosts = new Map<string, SessionHost>();
 
   constructor(opts: SessionRegistryOptions) {
     this.#agentDir = opts.agentDir;
     this.#buildConfig = opts.buildConfig;
+    this.#previewDefaults = opts.previewDefaults;
   }
 
   get(id: string): SessionHost | undefined {
@@ -89,6 +101,31 @@ export class SessionRegistry {
     if (live) return live.snapshot();
     const host = await this.#spawn({ resumeId: opts.id });
     return host.snapshot();
+  }
+
+  /**
+   * Cheap snapshot for the UI: live host when in memory, else transcript from
+   * disk without spawning `AgentSession` (no MCP connect).
+   */
+  async preview(opts: { id: string }): Promise<SessionSnapshot> {
+    const live = this.#hosts.get(opts.id);
+    if (live) return live.snapshot();
+    try {
+      const transcript = await loadTranscript(this.#agentDir, opts.id);
+      const { modelRef, mode } = await this.#previewDefaults();
+      return {
+        id: opts.id,
+        modelRef,
+        mode,
+        transcript,
+        running: false,
+        lastSeq: 0,
+      };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') throw new SessionPreviewNotFoundError(opts.id);
+      throw err;
+    }
   }
 
   async close(id: string): Promise<void> {

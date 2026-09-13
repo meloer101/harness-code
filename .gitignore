@@ -11,6 +11,7 @@ dist-bundle/
 .agent/sessions/
 .agent/traces/
 .agent/plans/
+.agent/memory/
 evals/.results/
 coverage/
 *.log

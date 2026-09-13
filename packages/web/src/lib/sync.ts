@@ -77,8 +77,23 @@ export class SessionSync {
     if (inflight) return inflight;
     const p = (async () => {
       try {
+        try {
+          const preview = await this.rpc.call('session.preview', { id });
+          const model = new SessionModel(preview, { hydrating: true });
+          this.#models.set(id, model);
+          this.#publish(id);
+        } catch (err) {
+          if (!(err instanceof RpcError && err.code === 'not_found')) throw err;
+        }
+
         const snapshot = await this.rpc.call('session.open', { id });
-        this.#models.set(id, new SessionModel(snapshot));
+        const model = this.#models.get(id);
+        if (model) {
+          model.reset(snapshot);
+          model.setHydrating(false);
+        } else {
+          this.#models.set(id, new SessionModel(snapshot));
+        }
         this.#publish(id);
         await this.#subscribe(id);
         void this.#loadSlash(id);

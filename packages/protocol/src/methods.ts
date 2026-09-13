@@ -5,10 +5,9 @@
  * `Call` derives a type-safe `call(method, params)` signature from the same
  * table, so client and server can never disagree about a method's shape.
  *
- * Method list, params, and results verbatim from docs/web.md, "Methods";
- * `SessionSummary` / `SessionSnapshot` verbatim from the same section (with
- * `transcript: TranscriptItem[]`, per the doc's own later correction under
- * "Transcript vs. context").
+ * Method list, params, and results define the web frontend's RPC contract;
+ * `SessionSummary` / `SessionSnapshot` carry `transcript: TranscriptItem[]`,
+ * the full display history (distinct from the model's context window).
  */
 
 import { z } from 'zod';
@@ -51,7 +50,7 @@ export interface SessionSnapshot {
   id: string;
   modelRef: string;
   mode: PermissionMode;
-  /** Full display history — see docs/web.md, "Transcript vs. context". */
+  /** Full display history (distinct from the model's context window). */
   transcript: TranscriptItem[];
   usage?: Usage;
   context?: ContextSnapshot;
@@ -100,6 +99,8 @@ export const methods = {
     z.object({ model: z.string().optional(), mode: permissionModeSchema.optional() }),
   ),
   'session.open': method<{ id: string }, SessionSnapshot>(z.object({ id: z.string() })),
+  /** Disk transcript only — no MCP / `AgentSession.create`. Used to render old sessions fast. */
+  'session.preview': method<{ id: string }, SessionSnapshot>(z.object({ id: z.string() })),
   'session.subscribe': method<{ id: string; sinceSeq?: number }, SubscribeResult>(
     z.object({ id: z.string(), sinceSeq: z.number().optional() }),
   ),

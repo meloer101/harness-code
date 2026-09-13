@@ -17,11 +17,13 @@ import {
   ProviderRegistry,
   VERSION,
   buildSessionConfig,
+  builtinMemoryDir,
   builtinTools,
   discoverAgents,
   discoverSkills,
   FileOAuthStore,
   findProjectRoot,
+  MemoryWriteBuffer,
   listTraceIds,
   loadMcpConfig,
   loadSettings,
@@ -34,12 +36,14 @@ import {
 } from '@harness-code/core';
 import type {
   AgentSessionConfig,
+  MemoryScope,
   ModelRequest,
   PermissionMode,
   TraceSummary,
 } from '@harness-code/core';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 
 import { buildPrompt, decideFrontend, readStdin } from './dispatch.js';
@@ -222,6 +226,7 @@ program
   .option('--no-progress', 'with --output-format json, do not stream JSONL progress to stderr')
   .option('--no-compact', 'disable automatic context compaction (history is never summarized)')
   .option('--no-skills', 'do not discover or offer skills')
+  .option('--no-memory', 'do not discover or offer persistent memory')
   .option('--no-subagents', 'do not discover sub-agents or offer the task tool')
   .option('--no-mcp', 'skip MCP discovery entirely')
   .option('--no-trace', 'do not write a telemetry trace under .agent/traces for this run')
@@ -244,6 +249,7 @@ program
         progress: boolean;
         compact: boolean;
         skills: boolean;
+        memory: boolean;
         subagents: boolean;
         mcp: boolean;
         trace: boolean;
@@ -264,6 +270,7 @@ program
           ask: opts.ask,
           deny: opts.deny,
           skills: opts.skills,
+          memory: opts.memory,
           subagents: opts.subagents,
           compact: opts.compact,
           mcp: opts.mcp,
@@ -472,6 +479,71 @@ program
       if (s.allowedTools) console.log(`  allowed-tools: ${s.allowedTools.join(' ')}`);
       console.log(`  ${s.dir}`);
     }
+  });
+
+const memoryCmd = program.command('memory').description('Inspect persistent cross-session memory');
+
+function parseMemoryScope(raw: string | undefined): MemoryScope | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'global' || raw === 'project') return raw;
+  fail(`--scope must be global or project, got "${raw}"`);
+}
+
+async function memoryBufferFor(cwd: string): Promise<MemoryWriteBuffer> {
+  return new MemoryWriteBuffer({
+    global: join(homedir(), AGENT_DIR, 'memory'),
+    project: join(await findProjectRoot(cwd), AGENT_DIR, 'memory'),
+    builtin: builtinMemoryDir(),
+  });
+}
+
+memoryCmd
+  .command('list')
+  .description('List memory entries (global and project; not limited by the manifest token budget)')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/memory against', process.cwd())
+  .option('--scope <scope>', 'global or project (default: both)')
+  .action(async (opts: { cwd: string; scope?: string }) => {
+    const cwd = resolvePath(opts.cwd);
+    const scope = parseMemoryScope(opts.scope);
+    const buf = await memoryBufferFor(cwd);
+    const scopes: MemoryScope[] = scope ? [scope] : ['global', 'project'];
+    let total = 0;
+    for (const s of scopes) {
+      const entries = await buf.list(s);
+      total += entries.length;
+      if (entries.length === 0) {
+        console.log(`${s}: (none)`);
+        continue;
+      }
+      console.log(`${s}: ${entries.length}`);
+      for (const e of entries) {
+        console.log(`  ${e.path}  [${e.type}, ${e.source}]`);
+        console.log(`    ${e.description}`);
+      }
+    }
+    if (total === 0) console.log('no memory entries found');
+  });
+
+memoryCmd
+  .command('show')
+  .description('Print one memory entry')
+  .argument('<path>', 'relative path, e.g. feedback/testing-no-mocks.md')
+  .option('--cwd <dir>', 'workspace root to resolve .agent/memory against', process.cwd())
+  .option('--scope <scope>', 'global or project (default: project, then global)')
+  .action(async (path: string, opts: { cwd: string; scope?: string }) => {
+    const cwd = resolvePath(opts.cwd);
+    const scope = parseMemoryScope(opts.scope);
+    const buf = await memoryBufferFor(cwd);
+    const tryScopes: MemoryScope[] = scope ? [scope] : ['project', 'global'];
+    for (const s of tryScopes) {
+      const entry = await buf.read(s, path);
+      if (!entry) continue;
+      console.log(`${entry.path}  [${entry.type}, ${entry.scope} / ${entry.source}]`);
+      console.log(`${entry.description}\n`);
+      console.log(entry.body);
+      return;
+    }
+    fail(`no memory entry at "${path}"${scope ? ` in ${scope} scope` : ''}`);
   });
 
 program
