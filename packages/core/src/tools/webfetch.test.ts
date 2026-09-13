@@ -27,11 +27,13 @@ describe('webfetchTool', () => {
   });
 
   it('upgrades http to https before fetching', async () => {
-    const fetchMock = vi.fn(async () => htmlResponse('<p>ok</p>'));
+    const fetchMock = vi.fn((_input: string | URL, _init?: RequestInit) =>
+      Promise.resolve(htmlResponse('<p>ok</p>')),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await webfetchTool.execute({ url: 'http://example.com/x' }, ctx);
-    const calledUrl = fetchMock.mock.calls[0]?.[0] as URL;
+    const calledUrl = fetchMock.mock.calls[0]?.[0];
     expect(String(calledUrl)).toBe('https://example.com/x');
   });
 
