@@ -42,15 +42,15 @@ Only needed when a change shifts the request fingerprint (a prompt or tokenizer
 change). Requires a live key in `.env`:
 
 ```bash
-pnpm eval --record              # re-records all cassettes against the live endpoint
-pnpm eval --update-baseline     # regenerate baseline.json from a REPLAY pass
-pnpm eval                       # confirm the gate is green
+pnpm eval --record   # re-records all cassettes, then writes a replay-derived baseline
+pnpm eval            # confirm the replay gate is green
 ```
 
-The second step matters: `--record` numbers come from the endpoint's real
-`usage`, but the CI gate runs *replay* (heuristic-estimated, ~tens of % higher).
-Keep `baseline.json` replay-derived so the gate is self-consistent. (A durable fix
-so `--record` does this itself is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).)
+`--record` derives `baseline.json` from a replay pass automatically: the CI gate
+runs *replay*, whose token counts are heuristic-estimated and diverge from the
+live `usage` a recording sees (the EMA token calibrator only corrects on live
+runs), so a live-numbers baseline would trip the gate on its own recording.
+`--update-baseline` regenerates the baseline from replay without re-recording.
 
 ## Adding things
 

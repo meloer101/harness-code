@@ -4,7 +4,9 @@
  *
  *   --task <id>          run one task (repeatable)
  *   --runs <n>           override each task's run count
- *   --record             hit the real endpoint, (re)write cassettes + baseline
+ *   --record             hit the real endpoint, re-record cassettes, then write a
+ *                        baseline re-derived from a replay pass (self-consistent
+ *                        with the replay gate — see the note in main())
  *   --model <ref>        model for --record / --ablation (default: task's own)
  *   --ablation <dim>     run the suite twice and print a comparison; <dim> is one of:
  *                          compaction    — compaction on/off (under a squeezed window)
@@ -149,8 +151,26 @@ async function main(): Promise<void> {
   process.stdout.write(`\n${renderTable(report)}\n`);
 
   if (flags.record || flags.updateBaseline) {
-    await writeFile(BASELINE_PATH, `${JSON.stringify(toBaseline(report), null, 2)}\n`);
-    process.stderr.write(`\nbaseline written to ${BASELINE_PATH}\n`);
+    // The CI gate runs `pnpm eval` in REPLAY mode, whose token counts are
+    // heuristic-estimated and diverge from the live `usage` a --record pass sees
+    // (the EMA calibrator only corrects on live runs). So derive the baseline
+    // from a replay pass — never from the live numbers just printed — or a fresh
+    // `--record` would leave the gate tripping on its own recording.
+    // `--update-baseline` alone already ran in replay mode, so reuse its report.
+    let baselineReport = report;
+    if (flags.record) {
+      process.stderr.write('\nre-deriving baseline from a replay pass …\n');
+      const replayCfg: RunConfig = {
+        resultsDir,
+        ...(flags.runs !== undefined ? { runs: flags.runs } : {}),
+        ...(flags.keep ? { keep: true } : {}),
+      };
+      const replayResults: TaskResult[] = [];
+      for (const t of tasks) replayResults.push(await runTask(t, replayCfg));
+      baselineReport = buildReport(replayResults, model);
+    }
+    await writeFile(BASELINE_PATH, `${JSON.stringify(toBaseline(baselineReport), null, 2)}\n`);
+    process.stderr.write(`\nbaseline written to ${BASELINE_PATH} (replay-derived)\n`);
     return;
   }
 
