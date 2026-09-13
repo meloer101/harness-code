@@ -1,10 +1,12 @@
-# harness-code
+# Marvis
 
-A coding agent built from scratch — MCP client and server, skills, plan mode,
-and the harness engineering underneath: context management, a permission
-sandbox, sub-agents, and an eval suite that measures whether any of it works.
+A coding agent you can read all of — built from scratch: MCP client and
+server, skills, plan mode, and the harness engineering underneath: context
+management, a permission sandbox, sub-agents, and an eval suite that measures
+whether any of it works. Runs on any OpenAI-compatible model. Ships as the
+`marvis` CLI (this repo is `harness-code`; `hc` is a command alias).
 
-![hc fixing a failing test suite end to end — read, edit, run tests, done](docs/demo.gif)
+![Marvis fixing a failing test suite end to end — read, edit, run tests, done](docs/demo.gif)
 
 <sub>`hc` fixing a failing test suite end to end, on a cheap model. Regenerate with [`scripts/record-demo.sh`](scripts/record-demo.sh).</sub>
 
@@ -19,11 +21,63 @@ sandbox, sub-agents, and an eval suite that measures whether any of it works.
 > with `hc trace` / `hc stats`), four frontends (one-shot CLI, REPL, Ink TUI,
 > browser UI), and the eval suite (`pnpm eval` — the whole loop against fixture
 > tasks, replayed from cassettes, gated on a baseline) are built and tested —
-> the demo above is one such run. The build plan is complete; only an optional
-> `npm publish` remains.
+> the demo above is one such run.
 >
 > How it fits together: [docs/architecture.md](docs/architecture.md). What
 > remains: [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Quick start
+
+Install the CLI (Node ≥ 20.10):
+
+```bash
+npm install -g marvis
+# or run without installing:
+npx marvis@latest
+```
+
+Give it a key for whichever provider you use. Marvis reads a `.env` in the
+directory you run it from, and real shell environment variables always win:
+
+```bash
+# in your project dir — any one provider is enough to start
+echo 'DEEPSEEK_API_KEY=sk-...' >> .env
+# other supported keys: OPENAI_API_KEY, MOONSHOT_API_KEY (Kimi), ZHIPU_API_KEY (GLM),
+# DASHSCOPE_API_KEY (Qwen), OPENROUTER_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY,
+# MISTRAL_API_KEY, XAI_API_KEY  — see .env.example
+```
+
+Then run it in your project:
+
+```bash
+marvis                       # interactive session (the Ink TUI)
+marvis "add input validation to parseConfig"   # one-shot
+marvis models                # show configured providers and which have keys
+```
+
+By default Marvis runs in **`ask` mode**: it reads freely but pauses for your
+approval before running a shell command or writing to a file. Update anytime
+with `npm update -g marvis` (or `npx marvis@latest`) — a single package, a
+single version line.
+
+## Safety
+
+Marvis is built to be handed a real codebase, but know its boundaries:
+
+- **Default `ask` mode** gates every `bash`, `write`, `edit`, and `webfetch`
+  call behind your approval; only read-only tools run unprompted. Keep it there
+  for code you don't trust — `yolo` mode removes the prompts.
+- **Secrets stay out of reach**: `.env*`, `*.pem`, `id_rsa`, `credentials*`,
+  `secrets.json`, and `.git/config` are refused by the file tools, API keys are
+  never passed to spawned commands, and keys never touch the session trace.
+- **OS write-sandbox is macOS-only** (via `sandbox-exec`): there, a shell
+  command physically can't write outside the workspace and temp dir. On Linux
+  and Windows there is no OS sandbox — the defenses are the command-review
+  denylist plus `ask` approval, so don't run `yolo` against untrusted code off
+  macOS.
+- **`bash` can reach the network and read any file you can** (approval is the
+  gate); `webfetch` additionally refuses private/loopback addresses and doesn't
+  follow cross-host redirects on its own.
 
 ## Why this exists
 
@@ -37,6 +91,10 @@ of those made the agent better rather than merely different.
 This repository is that harness, written to be read.
 
 ## What works today
+
+If you installed the CLI (Quick start above), the commands below are just
+`marvis <subcommand>`. The `node packages/cli/dist/index.js` form shown here is
+the **from-source / development** workflow after cloning this repo:
 
 ```bash
 pnpm install && pnpm build
@@ -156,11 +214,16 @@ each gets its own copy of the result; a denied call never executes. The loop sto
 an `AbortSignal` all the way down to a running `bash` child process.
 
 [`tools/`](packages/core/src/tools) ships `read`, `write`, `edit`, `glob`,
-`grep`, `bash`, and `todo`, each declaring `readOnly` / `concurrencySafe`
-metadata that the loop's scheduler and the permission engine both consume.
-`edit` and `write` enforce a read-before-write invariant: a file has to have
-been read in this session before it can be edited, using the same
-`SessionState` that will grow into Phase 4's full read ledger.
+`grep`, `bash`, `todo`, and `webfetch`, each declaring `readOnly` /
+`concurrencySafe` metadata that the loop's scheduler and the permission engine
+both consume. `edit` and `write` enforce a read-before-write invariant: a file
+has to have been read in this session before it can be edited, using the same
+`SessionState` that will grow into Phase 4's full read ledger. `webfetch`
+fetches a URL client-side and returns it as reader-mode markdown — only
+`http`/`https` (http upgraded to https), private/loopback hosts refused, a
+cross-host redirect handed back rather than followed, and the body wrapped as
+untrusted data; network egress is scoped with `WebFetch(domain:example.com)`
+rules.
 
 [`permissions/`](packages/core/src/permissions) is a rule engine over
 `Tool(specifier)` patterns — `Bash(git status:*)`, `Read(./src/**)` — with

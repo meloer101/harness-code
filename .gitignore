@@ -2,6 +2,7 @@ node_modules/
 .pnpm-store/
 dist/
 dist-bundle/
+release/
 *.tsbuildinfo
 .DS_Store
 .env

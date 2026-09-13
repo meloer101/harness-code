@@ -1,6 +1,6 @@
 {
   "name": "harness-code-monorepo",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,8 @@
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo evals/dist evals/*.tsbuildinfo *.tsbuildinfo dist-bundle",
     "hc": "node packages/cli/dist/index.js",
     "eval": "node evals/dist/cli.js",
-    "bundle": "node scripts/bundle-hc.mjs"
+    "bundle": "node scripts/bundle-hc.mjs",
+    "release:marvis": "node scripts/bundle-marvis.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
